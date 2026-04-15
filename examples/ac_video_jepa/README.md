@@ -12,20 +12,42 @@ This example demonstrates a Joint Embedding Predictive Architecture (JEPA) for a
 ## Overview
 Action Conditioned Video JEPA extends the `examples/video_jepa` example by incorporating actions into the representation learning and physical dynamics learning process. The image sequence is not fully deterministic, contrary to the video JEPA example. The model requires the action to be able to perfectly predict the next state.
 
+## Supported Datasets
+
+| Dataset | Domain | Observations | Actions | Config |
+|---------|--------|-------------|---------|--------|
+| **Two Rooms** | 2D navigation | 65×65 RGB | 2D velocity | `train.yaml` |
+| **DROID** | Real robot manipulation | Multi-view RGB | 7-DoF delta poses | `train/droid/vits16_patch384_lewm.yaml` |
+| **PushT** | 2D pushing | 96×96 RGB | 2D position | `train_pusht.yaml` |
+| **PointMaze** | 2D maze navigation | 64×64 RGB | 2D velocity | `train_pointmaze.yaml` |
+| **RoboCasa** | Kitchen manipulation | Multi-view RGB | 7-DoF delta poses | `train_robocasa.yaml` |
+
+> **Note:** RoboCasa support is partially implemented but not yet tested end-to-end.
+
 ## Training
 
 ### Architecture
 1. **Encoder**: Maps observations to latent representations. Options:
-     - *Impala*: The encoder we use to report our final results. Outputs one global representation vector per image.
+     - *Impala*: CNN encoder. Outputs one global representation vector per image.
+     - *ResNet*: ResNet-based encoder with configurable spatial output (1×1, 4×4, 16×16).
+     - *ViT*: Vision Transformer encoder using patch tokens (spatial output) or CLS token (global).
+     - *DINOv2*: Frozen DINOv2 encoder for transfer learning experiments.
 
 2. **Predictor**: Predicts future representations based on current state and action. Options:
-      - *RNNPredictor*: 2-layer Gated Recurrent Unit for temporal predictions. Used with Impala encoder.
+      - *RNNPredictor*: 2-layer Gated Recurrent Unit for temporal predictions.
+      - *SpatialCausalTransformer*: Transformer-based predictor with spatial cross-attention.
+      - *ConvNeXtGRU*: ConvNeXt-based GRU for spatial predictors.
+      - *UNetGRU*: UNet-based GRU with skip connections.
 
 3. **Action Encoder**: Processes action vectors
-   - *Identity*: when using the Impala encoder, which yields one vector per image, we just input the 2D action to the associated RNN predictor.
+   - *Identity*: when using global encoders (Impala), the raw action is input to the predictor.
+   - *MLP*: learned action encoding for higher-level predictors.
 
 4. **Regularizer**: Prevents representation collapse.
-   - *Optional regularization projector*: we use various losses to maintain informative representations. These can involve a projector before computing the regularization loss terms.
+   - *VCReg*: Variance-Covariance regularization.
+   - *SIGReg*: Epps-Pulley Gaussianity-based regularization.
+   - *Per-patch regularization*: for spatial encoders, regularize each patch position independently.
+   - *Optional regularization projector*: projector before computing regularization losses.
 
 ### Training Objectives
 We train the model with the below loss terms. The first term drives the system to perform the task of interest, namely to predict future states given previous states and action.
@@ -72,15 +94,28 @@ We study two setups:
 
 ### Usage
 ```bash
-# Train a model locally
+# Train on Two Rooms (default)
 python -m examples.ac_video_jepa.main \
-  --fname examples/ac_video_jepa/cfgs/train.yaml
+  --fname examples/ac_video_jepa/cfgs/train/two_rooms/vc.yaml
+
+# Train on DROID
+
+# Train on DROID (requires EBJEPA_DATA or EBJEPA_DSETS set)
+python -m examples.ac_video_jepa.main \
+  --fname examples/ac_video_jepa/cfgs/train/droid/vits16_patch384_lewm.yaml
 
 # Launch 3 seeds with automatic wandb averaging (recommended)
 python -m examples.launch_sbatch --example ac_video_jepa
 
 # Launch 3 seeds with custom sweep name
 python -m examples.launch_sbatch --example ac_video_jepa --sweep my_experiment
+
+# [WIP] Train with projected planning objective (TemporalStraighteningLoss cost module)
+# Trains an MLP projector on top of the frozen encoder (detach_encoder: true)
+# to learn a planning cost; use with mppi_proj.yaml at eval time.
+# Not extensively tested yet.
+python -m examples.ac_video_jepa.main \
+  --fname examples/ac_video_jepa/cfgs/train/two_rooms/train_proj.yaml
 ```
 
 See the main [README](../../README.md) for wandb seed averaging and sweep UI instructions.
@@ -90,6 +125,9 @@ See the main [README](../../README.md) for wandb seed averaging and sweep UI ins
 python -m examples.ac_video_jepa.main \
   --meta.model_folder /path/to/trained/model \
   --meta.eval_only_mode True
+
+# Launch a debugging run
+python -m examples.ac_video_jepa.main --fname examples/ac_video_jepa/cfgs/train/two_rooms/vc.yaml --logging.log_wandb False --data.size 1000 --training.use_amp False --optim.epochs 1 --meta.eval_every_itr 2 --meta.light_eval_freq 2 --eval_cfg.meta.num_eval_episodes 1
 ```
 
 ## Evaluation
@@ -117,7 +155,9 @@ In both setups, we *sample the dot initial and goal position* as follows:
 2. For both the initial and goal position, sample uniformly the y coordinate between the lower and upper wall, sample uniformly the x coordinate between the left and right wall of each room.
 
 #### Planning optimizers
-We use either of the below population-based optimizers to find $a$ that minimizes $C(a, s_0, s_g)$. These optimizers both use a Gaussian proposal distribution for the actions of which they iteratively refine the mean and variance parameters $\mu$ and $\sigma$.
+We support both population-based and gradient-based optimizers to find $a$ that minimizes $C(a, s_0, s_g)$.
+
+**Population-based** (MPPI, CEM): Use a Gaussian proposal distribution and iteratively refine mean and variance:
 - **Model Predictive Path Integral (MPPI)**: Sample-based stochastic optimization that works as follows:
   1. Initialize a Gaussian proposal distribution with mean $\mu_0$ and standard deviation $\sigma_0$
   2. For $j=1,\dots,J$:
@@ -133,10 +173,33 @@ We use either of the below population-based optimizers to find $a$ that minimize
   1. Importance weights are $w_i =\frac{1}{K}$ for the $K$ elite trajectories
   2. We return the final refined mean $\mu_J$ as the planned action trajectory
 
+**Gradient-based** (Adam): Directly optimize actions via backpropagation through the world model:
+- **Adam**: Adam optimizer with configurable learning rate
+
+Planning configs are in `cfgs/planning/`:
+
+| Config | Optimizer | Notes |
+|--------|-----------|-------|
+| `mppi.yaml` | MPPI | Default population-based |
+| `mppi_proj.yaml` | MPPI | Projected objective, WIP (pair with `train/two_rooms/train_proj.yaml`) |
+| `mppi_H12_ni5_ns100_ne10.yaml` | MPPI | Low-compute variant (H=12, 5 iters, 100 samples) |
+| `pusht_cem.yaml` | CEM | Tuned for PushT |
+| `maze_cem.yaml` | CEM | Tuned for PointMaze |
+| `adam.yaml` | Adam | Gradient-based |
+| `droid_mppi.yaml` | MPPI | Tuned for DROID |
+
 ## Results
 We consider the fixed wall training setup to be solved as we get 98% success when evaluating on the same wall setup. Hence, we focus on the results on the Random Wall, and **only display results on the Random Wall task in the below sections**.
 
-Our **best model** is trained with the **Impala-RNN** architecture on Random Wall, without projectors before applying the regularization losses, and with the following losses coefficients $(\beta, \alpha, \delta, \omega) = (8, 16, 12, 1)$. The other training hyperparameters are specified in `examples/ac_video_jepa/cfgs/train.yaml` and the planning hyperparameters are in `eb_jepa/planning_mppi.yaml`.
+All models use the **Impala-RNN** architecture. Success rates are averaged over 3 seeds. We compare two regularizers (VCReg and SIGReg) and two planning budgets (high compute: MPPI with H=90, 20 iters, 200 samples; low compute: MPPI with H=12, 5 iters, 100 samples).
+
+| Regularizer | Planning | SR (%) | Time/ep (s) | Config |
+|-------------|----------|--------|-------------|--------|
+| SIGReg | High | $99.4 \pm 1.0$ | 51.3 | `sigreg.yaml` |
+| SIGReg | Low | $98.3 \pm 2.9$ | 6.9 | `sigreg_low_plan_compute.yaml` |
+| VCReg | High | $96.7 \pm 4.4$ | 50.9 | `vc.yaml` |
+| VCReg | Low | $80.6 \pm 15.1$ | 7.2 | `vc_low_plan_compute.yaml` |
+
 ### Unrolling
 The unrolling of 90 actions by our best model is illustrated in the below figure. We display a batch of four trajectories. For each  trajectory, we have four columns:
 1. **GT**: The first column is the trajectory sampled from the dataset.
@@ -152,11 +215,12 @@ The unrolling of 90 actions by our best model is illustrated in the below figure
 ### Planning
 In all the below tables, we first obtain success rates as an average over $N=20$ planning episodes. For each model, we launch 3 training seeds, over which we average success rate. To account for variability across a single run, we also average the success rate of the last 3 training epochs. We display the **std over 3 seeds and the 3 last epoch checkpoints** for all below sections.
 
-Our best model gets 97% Success in the Random Wall setup.
+Our best model gets 99.4% Success in the Random Wall setup.
 
 | Model Architecture | Planner | SR (%) |
 |-------------------|---------|------------------|
 | Impala - RNN| MPPI   | $97 \pm 2$ |
+| Impala - RNN (SIGReg) | MPPI   | $99.4 \pm 1.0$ |
 
 #### Visualization
 The below figure shows a successful planning episode with the MPPI planner, a model trained on the fixed wall and evaluated on the same wall position.
@@ -192,7 +256,7 @@ Key insights:
 
 
 ### Planning optimizer
-In the below table, we also compare planning optimizers in terms of success rate and planning time, with the same hyperparameters, specified in `eb_jepa/planning_mppi.yaml` and `eb_jepa/planning_cem.yaml`, and our best Impala model, specified in `examples/ac_video_jepa/cfgs/train.yaml`.
+In the below table, we also compare planning optimizers in terms of success rate and planning time, with the same hyperparameters, specified in `eb_jepa/planning_mppi.yaml` and `eb_jepa/planning_cem.yaml`, and our best Impala model, specified in `examples/ac_video_jepa/cfgs/train/two_rooms/vc.yaml`.
 
 | Model Architecture | Planner | SR (%) | Episode time (s) |
 |-------------------|---------------|------------------|----|
@@ -211,7 +275,7 @@ To reproduce the below plot, launch a full hyperparameter sweep with the `--full
 ```
 python -m examples.ac_video_jepa.launch_sbatch \
   --sweep <experiment_name> \
-  --fname examples/ac_video_jepa/cfgs/train.yaml \
+  --fname examples/ac_video_jepa/cfgs/train/two_rooms/vc.yaml \
   --full-sweep \
   --use-wandb-sweep
 ```
@@ -226,9 +290,42 @@ This sweeps over the following regularization loss coefficients and seeds:
 | <div align="center"><img src="assets/imp_randw_best_2nd_sweep.png" alt="Successful planning episode" width="500" /> |
 | *Wandb logging of success rate, losses and unroll eval metrics throughout a training sweep of regularization loss coefficients, on the random wall setup. Each curve is the average of 3 runs with different training seeds.* |
 
+## LE-WM Reproduction (WIP)
+
+> **Status: work in progress.** Configs are set up but results have not yet been validated against the original paper.
+
+We reproduce the [LE-WM](https://github.com/lucas-maes/le-wm) ([Maes et al. 2025](https://arxiv.org/abs/2603.19312)) architecture on PushT and PointMaze. LE-WM uses a ViT-Tiny encoder with CLS token, a causal Transformer predictor with AdaLN action conditioning, and SIGReg regularization.
+
+| Dataset | Config |
+|---------|--------|
+| **PushT** | `train/pusht/vits14_cls_lewm.yaml` |
+| **PointMaze** | `train/maze/vits14_cls_lewm.yaml` |
+
+```bash
+# Train LE-WM on PushT
+python -m examples.ac_video_jepa.main \
+  --fname examples/ac_video_jepa/cfgs/train/pusht/vits14_cls_lewm.yaml
+
+# Train LE-WM on PointMaze
+python -m examples.ac_video_jepa.main \
+  --fname examples/ac_video_jepa/cfgs/train/maze/vits14_cls_lewm.yaml
+```
+
+## Experimental DROID Configs (WIP)
+
+> **Status: work in progress.** These configs showcase alternative architectures on DROID but have not been tuned or validated yet. They may not produce good results out of the box.
+
+| Config | Architecture | Notes |
+|--------|-------------|-------|
+| `train/droid/vitpatch32_convgru_lewm.yaml` | ViT 32×32 patches + ConvGRU predictor | Spatial predictor variant |
+| `train/droid/vitpatch32_convnextgru_lewm.yaml` | ViT 32×32 patches + ConvNeXtGRU predictor | ConvNeXt-based spatial predictor |
+| `train/droid/vitpatch32_unetgru_lewm.yaml` | ViT 32×32 patches + UNetGRU predictor | UNet-based spatial predictor with skip connections |
+| `train/droid/train_droid_dinov2-wm.yaml` | Frozen DINOv2 encoder | Reproduction of the [DINO-WM](https://arxiv.org/abs/2411.04983) setup, not extensively tested |
+
 ## References
 - [JEPA Paper](https://openreview.net/pdf?id=BZ5a1r-kVsf)
 - [PLDM and Two-Rooms Environment](https://arxiv.org/abs/2502.14819)
+- [LE-WM](https://arxiv.org/abs/2603.19312) ([code](https://github.com/lucas-maes/le-wm))
 - [MPPI](https://arxiv.org/abs/1509.01149)
 - [CEM](https://asco.lcsr.jhu.edu/papers/Ko2012.pdf)
 - [ResNet Architecture](https://arxiv.org/abs/1512.03385)

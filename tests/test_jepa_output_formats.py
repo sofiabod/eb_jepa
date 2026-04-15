@@ -15,17 +15,19 @@ Usage patterns:
 import torch
 import torch.nn as nn
 
-from eb_jepa.architectures import (
-    ImpalaEncoder,
+from eb_jepa.jepa import JEPA
+from eb_jepa.losses.anticollapse import VCLoss
+from eb_jepa.losses.prediction import SquareLossSeq
+from eb_jepa.losses.regularizers import VC_IDM_Sim_Regularizer
+from eb_jepa.models.components import (
     InverseDynamicsModel,
     Projector,
     ResNet5,
     ResUNet,
-    RNNPredictor,
     StateOnlyPredictor,
 )
-from eb_jepa.jepa import JEPA
-from eb_jepa.losses import SquareLossSeq, VC_IDM_Sim_Regularizer, VCLoss
+from eb_jepa.models.encoders import ImpalaEncoder
+from eb_jepa.models.predictors import RNNPredictor
 
 
 # ============================================================================
@@ -75,7 +77,6 @@ def create_ac_video_jepa_model(device="cpu", img_size=65):
     std_coeff = 16
     sim_coeff_t = 12
     idm_coeff = 1
-    first_t_only = False
     spatial_as_samples = False
     use_proj = False
     idm_after_proj = False
@@ -101,7 +102,7 @@ def create_ac_video_jepa_model(device="cpu", img_size=65):
 
     # Create predictor (RNNPredictor as in main.py)
     predictor = RNNPredictor(
-        hidden_size=encoder.mlp_output_dim,
+        predictor_dim=encoder.mlp_output_dim,
         action_dim=action_dim,
         final_ln=nn.LayerNorm(encoder.mlp_output_dim) if encoder.final_ln else None,
     )
@@ -131,7 +132,6 @@ def create_ac_video_jepa_model(device="cpu", img_size=65):
         sim_coeff_t=sim_coeff_t,
         idm_coeff=idm_coeff,
         idm=idm,
-        first_t_only=first_t_only,
         projector=projector,
         spatial_as_samples=spatial_as_samples,
         idm_after_proj=idm_after_proj,
@@ -169,9 +169,9 @@ def test_unroll_parallel_mode_output_format():
     Test unroll() output format in parallel mode.
 
     Usage pattern:
-        preds, losses = jepa.unroll(x, actions=None, nsteps=nsteps,
-                                    unroll_mode="parallel", compute_loss=False,
-                                    return_all_steps=True)
+        preds, _, losses = jepa.unroll(x, actions=None, nsteps=nsteps,
+                                       unroll_mode="parallel", compute_loss=False,
+                                       return_all_steps=True)
     """
     print("=" * 60)
     print("Testing unroll() parallel mode output format")
@@ -203,7 +203,7 @@ def test_unroll_parallel_mode_output_format():
     )
 
     with torch.no_grad():
-        preds, losses = jepa.unroll(
+        preds, _, losses = jepa.unroll(
             x,
             actions=None,
             nsteps=nsteps,
@@ -251,7 +251,7 @@ def test_unroll_parallel_mode_with_loss():
     Test unroll() output format in parallel mode with loss computation.
 
     Usage pattern:
-        _, losses = jepa.unroll(x, actions=None, nsteps=cfg.model.steps,
+        _, _, losses = jepa.unroll(x, actions=None, nsteps=cfg.model.steps,
                                 unroll_mode="parallel", compute_loss=True)
         loss, rloss, rloss_unweight, rloss_dict, ploss = losses
     """
@@ -276,7 +276,7 @@ def test_unroll_parallel_mode_with_loss():
     print(f"\nCalling: jepa.unroll(x, actions=None, nsteps={nsteps}, ...")
     print(f"         unroll_mode='parallel', compute_loss=True)")
 
-    predicted_states, losses = jepa.unroll(
+    predicted_states, _, losses = jepa.unroll(
         x, actions=None, nsteps=nsteps, unroll_mode="parallel", compute_loss=True
     )
     loss, rloss, rloss_unweight, rloss_dict, ploss = losses
@@ -356,9 +356,9 @@ def test_unroll_autoregressive_mode_shapes():
     This tests the autoregressive mode as used in planning/MPC.
 
     Usage pattern:
-        predicted_states, _ = jepa.unroll(obs_init, actions, nsteps,
-                                          unroll_mode="autoregressive",
-                                          ctxt_window_time=1, compute_loss=False)
+        predicted_states, _, _ = jepa.unroll(obs_init, actions, nsteps,
+                                              unroll_mode="autoregressive",
+                                              ctxt_window_time=1, compute_loss=False)
     """
     print("\n" + "=" * 60)
     print("Testing AC Video JEPA unroll() autoregressive mode shapes")
@@ -408,7 +408,7 @@ def test_unroll_autoregressive_mode_shapes():
     )
 
     with torch.no_grad():
-        predicted_states, losses = jepa.unroll(
+        predicted_states, _, losses = jepa.unroll(
             obs_init,
             actions,
             nsteps=nsteps,
@@ -512,7 +512,7 @@ def test_unroll_autoregressive_with_loss():
     Test unroll() autoregressive mode with loss computation for training.
 
     Usage pattern:
-        _, losses = jepa.unroll(x, actions, nsteps,
+        _, _, losses = jepa.unroll(x, actions, nsteps,
                                 unroll_mode="autoregressive", ctxt_window_time=1,
                                 compute_loss=True)
     """
@@ -555,7 +555,7 @@ def test_unroll_autoregressive_with_loss():
         f"         unroll_mode='autoregressive', ctxt_window_time=1, compute_loss=True)"
     )
 
-    predicted_states, losses = jepa.unroll(
+    predicted_states, _, losses = jepa.unroll(
         x,
         actions,
         nsteps=nsteps,
@@ -642,7 +642,7 @@ def test_unroll_autoregressive_with_conv_predictor():
     )
 
     with torch.no_grad():
-        unroll_result, unroll_losses = jepa.unroll(
+        unroll_result, _, unroll_losses = jepa.unroll(
             obs,
             actions=None,
             nsteps=nsteps,
@@ -689,7 +689,7 @@ def test_unroll_return_all_steps_format():
     nsteps = 3
 
     with torch.no_grad():
-        all_steps, _ = jepa.unroll(
+        all_steps, _, _ = jepa.unroll(
             x,
             actions=None,
             nsteps=nsteps,
@@ -719,7 +719,7 @@ def test_unroll_return_all_steps_format():
     actions = torch.randn(B, A, nsteps, device=device)
 
     with torch.no_grad():
-        all_steps_ac, _ = jepa_ac.unroll(
+        all_steps_ac, _, _ = jepa_ac.unroll(
             obs,
             actions,
             nsteps=nsteps,

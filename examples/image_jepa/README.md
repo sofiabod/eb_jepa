@@ -54,6 +54,21 @@ You can override any config parameter using dot notation:
 python -m examples.image_jepa.main --fname examples/image_jepa/cfgs/default.yaml optim.epochs=50 data.batch_size=128
 ```
 
+### ImageNet-1K Scale Configs
+
+Configs for ImageNet-1K training are in `cfgs/IN1K/`:
+
+| Config | Backbone | Loss | Val Acc (%) |
+|--------|----------|------|-------------|
+| `IN1K/sigreg_resnet50.yaml` | ResNet-50 | SIGReg | **66.43** |
+| `IN1K/vicreg_resnet50.yaml` | ResNet-50 | VICReg | 62.67* |
+| `IN1K/vicreg_vits.yaml` | ViT-S | VICReg | 59.87* |
+| `IN1K/sigreg_vits.yaml` | ViT-S | SIGReg | 59.29* |
+
+```bash
+python -m examples.image_jepa.main --fname examples/image_jepa/cfgs/IN1K/sigreg_resnet50.yaml
+```
+
 ## Results
 
 ### Comparison: SIGReg and VICReg
@@ -106,6 +121,20 @@ VICReg tends to work better with higher dimensional output dimensions, whereas S
 This difference does not lead to meaningful practical differences in terms of training time or memory.
 
 Both methods have a similar drop of performance of around 2.5-3 points when not using a projector, highlighting its importance in the method's design.
+
+
+### ImageNet-1K
+
+We train on ImageNet-1K with ResNet-50 and ViT-S/14 backbones using SIGReg and VICReg losses. Val Acc is measured using the online linear probe after 100 pretraining epochs:
+
+| Config | Backbone | Loss | Optimizer | Projector | Epochs | Val Acc (%) |
+|--------|----------|------|-----------|-----------|--------|-------------|
+| `sigreg_resnet50` | ResNet-50 | SIGReg (λ=0.01) | AdamW | 2048→64 | 300 | **66.43** |
+| `vicreg_resnet50` | ResNet-50 | VICReg (cov=80) | LARS | 8192→8192 | 330/1000 | 62.67* |
+| `vicreg_vits` | ViT-S/14 | VICReg (cov=10) | AdamW | 4096→8192 | 66/300 | 59.87* |
+| `sigreg_vits` | ViT-S/14 | SIGReg (λ=0.005) | AdamW | 1024→64 | 80/300 | 59.29* |
+
+\* Sweep still training; results will be updated.
 
 
 ---

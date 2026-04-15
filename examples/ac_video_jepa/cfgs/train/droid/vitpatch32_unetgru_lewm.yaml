@@ -1,0 +1,96 @@
+slurm:
+  gpus: 8
+logging:
+  log_wandb: true
+  wandb_group:
+  wandb_sweep:
+  log_every: 100
+  exp_tag: droid-vitpatch32-unetgru-lewm
+  save_every: 5
+  tqdm_silent: false
+meta:
+  model_folder:
+  load_model: true
+  enable_plan_eval: false
+  eval_every_itr: 6000
+  light_eval_freq: 250
+  seed: 1
+  eval_only_mode: false
+  skip_cost_module_at_eval: false
+  train_decoder_only: false
+data:
+  env_name: droid
+  camera_views: ["left_mp4_path", "right_mp4_path"]
+  fps: 5
+  frameskip: 1
+  action_skip: 1
+  normalize_action: true
+  droid_fraction: 1.0
+  train_fraction: 0.9
+  seed: 42
+  num_frames: 8
+  num_frames_val: 8
+  process_actions: "concat"
+  batch_size: 16
+  val_batch_size: 4
+  num_workers: 16
+  pin_mem: true
+  persistent_workers: true
+  img_size: 224
+training:
+  use_amp: true
+  dtype: bfloat16
+model:
+  compile: false
+  dobs: 3
+  encoder:
+    architecture: vit
+    scale: tiny
+    patch_size: 16
+    output_dim: 32
+  predictor:
+    type: unet_gru
+    predictor_dim: 64
+    base_channels: 64
+  rollout:
+    unroll_mode: autoregressive
+    nsteps: 4
+    ctxt_window_time: 3
+  regularizer:
+    type: sigreg
+    sigreg_coeff: 0.1
+    sim_coeff_t: 1.0
+    idm_coeff: 0.1
+    spatial_as_samples: false
+    reg_per_patch: true
+    use_proj: false
+    idm_after_proj: false
+    sim_t_after_proj: false
+optim:
+  iterations_per_epoch: 300
+  epochs: 100
+  lr: 1.e-4
+  weight_decay: 1.e-3
+  grad_clip: 1.0
+probe:
+  state_dims: [0, 1]
+  hidden_dims: [512]
+eval:
+  plan_cfg_path: examples/ac_video_jepa/cfgs/planning/mppi_H12_ni5_ns100_ne10.yaml
+  eval_cfg_path: examples/ac_video_jepa/cfgs/eval/two_rooms.yaml
+visual_decoder:
+  enabled: true
+  base_channels: 256
+  init_spatial: 1
+  min_channels: 64
+  use_lpips: true
+  pixel_weight: 10.0
+  perceptual_weight: 1.0
+
+sweep:
+  param_grid:
+    model.regularizer.sigreg_coeff: [0.01, 0.1]
+    model.regularizer.sim_coeff_t: [0.01, 0.1, 1]
+    model.regularizer.idm_coeff: [0.01, 0.1, 1]
+    model.rollout.nsteps: [1, 2]
+    meta.seed: [1, 10000]

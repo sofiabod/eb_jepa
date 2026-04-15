@@ -1,0 +1,37 @@
+# DROID planning config: offline eval with MPPI
+# goal_source: dset (sample init/goal from val_loader)
+# eval_mode: offline (single-shot plan + ATE, no env stepping)
+
+eval_tag: droid_mppi_offline
+logging:
+  tqdm_silent: false
+task_specification:
+  goal_source: dset
+  eval_mode: offline
+  obs: rgb
+planner:
+  planner_name: mppi
+  action_clip_sigma: 3.0
+  num_act_stepped: 3
+  plan_length: 3
+  n_iters: 30
+  num_samples: 300
+  num_elites: 30
+  momentum_mean: 0.
+  momentum_std: 0.
+  max_norms:
+    - 1
+    - 1
+  max_norm_dims:
+    - [0, 1, 2, 3, 4, 5]
+    - [6]
+  var_scale: 1.5
+  max_std: 2.0
+  temperature: 0.005
+  decode_each_iteration: true
+  planning_objective:
+    objective_type: repr_dist
+    sum_all_diffs: false
+    alpha: 0.
+ctxt_window_time: 1
+seed: 1

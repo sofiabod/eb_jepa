@@ -1,0 +1,123 @@
+logging:
+  log_wandb: true
+  wandb_group:
+  wandb_sweep:
+  log_every: 50
+  exp_tag: h-jepa-sigreg
+  save_every: 1
+  tqdm_silent: false
+  heatmap_every_n_epochs: 1
+  action_stats_num_batches: 16
+meta:
+  model_folder:
+  load_model: true
+  enable_plan_eval: true
+  eval_every_itr: -1
+  light_eval_freq: 100
+  seed: 1
+data:
+  env_name: two_rooms
+  batch_size: 256
+  num_workers: 16
+  pin_mem: true
+  persistent_workers: true
+training:
+  use_amp: true
+  dtype: bfloat16
+model:
+  compile: true
+  dobs: 2
+  rollout:
+    nsteps: 12
+    val_nsteps: 8
+  num_levels: 3
+
+  level_1:
+    encoder:
+      architecture: impala
+      stack_sizes: [16, 32, 32]
+      output_dim: 512
+    predictor:
+      type: rnn
+      num_layers: 1
+    regularizer:
+      type: sigreg
+      sigreg_coeff: 0.01
+      sim_coeff_t: 8
+      idm_coeff: 0.5
+
+  level_2:
+    temporal_stride: 2
+    encoder:
+      architecture: mlp
+      hidden_dims: [512, 256]
+      output_dim: 256
+    predictor:
+      type: rnn
+      num_layers: 1
+    action_encoder:
+      hidden_dims: [64]
+      output_dim: 4
+      final_ln: true
+    regularizer:
+      type: sigreg
+      sigreg_coeff: 0.05
+      sim_coeff_t: 6
+      idm_coeff: 0.5
+      action_std_coeff: 4.0
+      action_cov_coeff: 2.0
+
+  level_3:
+    temporal_stride: 2
+    encoder:
+      architecture: mlp
+      hidden_dims: [256, 128]
+      output_dim: 128
+    predictor:
+      type: rnn
+      num_layers: 1
+    action_encoder:
+      hidden_dims: [32]
+      output_dim: 8
+      final_ln: true
+    regularizer:
+      type: sigreg
+      sigreg_coeff: 0.05
+      sim_coeff_t: 3
+      idm_coeff: 0.25
+      action_std_coeff: 2.0
+      action_cov_coeff: 1.0
+
+  level_weights: [1.0, 1.0, 1.0]
+
+optim:
+  epochs: 12
+  lr: 0.001
+  grad_clip: 2.0
+  weight_decay: 1.e-5
+  lr_scales:
+    level_2: 1.0
+    level_3: 1.0
+probe:
+  state_dims: [0, 1]
+eval:
+  plan_cfg_path: examples/h_ac_video_jepa/cfgs/planning/lvl2_mppi_ni5_ns50_ne10.yaml
+  eval_cfg_path: examples/h_ac_video_jepa/cfgs/eval/two_rooms.yaml
+  unroll_levels: [1, 2, 3]
+
+sweep:
+  # ── Sweep 1 (COMPLETED, sweep_sigreg_h_ac_video_jepa, 72 runs) ─────────────
+  # Best: 88.9% (sigr=10, ns=1024, simt=12, idm=0.5)
+  # Findings: L1 sigreg_coeff dominates (RF=0.93, Spearman=0.55).
+  #   sigr=10 >> sigr=0.1 > sigr=1.  num_slices=1024 slightly > 256.
+  #   sim_t=12 slightly > 8.  idm=0.5 slightly > 1.0.  sigr=10 at boundary.
+  # Note: sigr=10 in old convention = 10/256 = 0.039 in new (batch-scaled) convention.
+  # Result: 93.3% ± 2.9% SR at 11.6s with lvl2_mppi_ni5_ns50_ne10 (start_level=2)
+
+  # ── Sweep 2: 2-level low-compute (108 runs = 36 configs × 3 seeds) ─────────
+  param_grid:
+    model.level_1.regularizer.sigreg_coeff: [0.005, 0.01, 0.1]
+    model.level_1.regularizer.sim_coeff_t: [0, 8, 12, 16]
+    model.level_1.regularizer.idm_coeff: [0.5, 1.0]
+    model.rollout.nsteps: [8, 12]
+    meta.seed: [1, 1000, 10000]

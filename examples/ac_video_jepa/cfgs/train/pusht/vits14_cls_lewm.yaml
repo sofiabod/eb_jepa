@@ -1,0 +1,100 @@
+slurm:
+  gpus: 8
+logging:
+  log_wandb: true
+  wandb_group:
+  wandb_sweep:
+  log_every: 10
+  exp_tag: pusht_vits14_lewm
+  save_every: 5
+  tqdm_silent: false
+  heatmap_every_n_epochs: 1
+meta:
+  model_folder:
+  load_model: true
+  enable_plan_eval: true
+  eval_every_itr: -1
+  light_eval_freq: 300
+  seed: 1
+  eval_only_mode: false
+  skip_cost_module_at_eval: false
+data:
+  env_name: pusht
+  batch_size: 128
+  num_workers: 16
+  pin_mem: true
+  persistent_workers: true
+training:
+  use_amp: true
+  dtype: bfloat16
+model:
+  compile: false
+  dobs: 3
+  encoder:
+    architecture: vit_cls
+    scale: tiny
+    patch_size: 14
+    output_dim: 192
+    freeze: false
+    projector_spec: "192-2048-192"
+    projector_activation: gelu
+    projector_final_bias: true
+  rollout:
+    unroll_mode: parallel
+    nsteps: 1
+    ctxt_window_time: 3
+    val_ctxt_window_time: 2
+    stop_gradient: false
+    detach_pred_target: false
+  predictor:
+    type: causal_transformer
+    use_residual: false
+    predictor_dim: 192
+    depth: 6
+    heads: 16
+    dim_head: 64
+    max_seq_len: 16
+    dropout: 0.1
+    emb_dropout: 0.0
+    adaln_init_scale: 0
+    action_cond_mode: adaln
+    mlp_ratio: 10.667
+    action_mlp_ratio: 4.0
+    pos_embed_init_scale: 1.0
+    projector_spec: "192-2048-192"
+    projector_activation: gelu
+    projector_final_bias: true
+    double_norm: true
+  regularizer:
+    type: sigreg
+    sigreg_coeff: 0.09
+    sim_coeff_t: 0
+    idm_coeff: 0
+    spatial_as_samples: false
+    use_proj: false
+    idm_after_proj: false
+    sim_t_after_proj: false
+optim:
+  epochs: 100
+  lr: 5.e-5
+  weight_decay: 1.e-3
+  grad_clip: 1.0
+probe:
+  state_dims: [0, 1]
+eval:
+  plan_cfg_path: examples/ac_video_jepa/cfgs/planning/pusht_cem.yaml
+  eval_cfg_path: examples/ac_video_jepa/cfgs/eval/pusht.yaml
+visual_decoder:
+  enabled: true
+  type: vit
+  vit_depth: 4
+  use_lpips: true
+  pixel_weight: 10.0
+  perceptual_weight: 1.0
+
+sweep:
+  param_grid:
+    model.regularizer.idm_coeff: [0, 1, 10]
+    model.regularizer.sigreg_coeff: [0.01, 0.04, 0.1]
+    model.rollout.nsteps: [1, 2]
+    meta.seed: [1, 1000]

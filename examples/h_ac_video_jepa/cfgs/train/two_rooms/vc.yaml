@@ -1,0 +1,118 @@
+logging:
+  log_wandb: true
+  wandb_group:
+  wandb_sweep:
+  log_every: 50
+  exp_tag: h-jepa
+  save_every: 1
+  tqdm_silent: false
+  heatmap_every_n_epochs: 1
+  action_stats_num_batches: 16
+meta:
+  model_folder:
+  load_model: true
+  enable_plan_eval: true
+  eval_every_itr: -1
+  light_eval_freq: 100
+  seed: 1
+data:
+  env_name: two_rooms
+  batch_size: 256
+  num_workers: 16
+  pin_mem: true
+  persistent_workers: true
+training:
+  use_amp: true
+  dtype: bfloat16
+model:
+  compile: true
+  dobs: 2
+  rollout:
+    nsteps: 12
+    val_nsteps: 8
+  num_levels: 3
+
+  # Level 1 (base): operates on raw observations at full temporal resolution
+  level_1:
+    encoder:
+      architecture: impala
+      stack_sizes: [16, 32, 32]
+      output_dim: 512
+    predictor:
+      type: rnn
+      num_layers: 1
+    regularizer:
+      cov_coeff: 8
+      std_coeff: 16
+      sim_coeff_t: 16
+      idm_coeff: 0.5
+
+  # Level 2: temporal stride 2 from level 1
+  level_2:
+    temporal_stride: 2
+    encoder:
+      architecture: mlp
+      hidden_dims: [512, 256]
+      output_dim: 256
+    predictor:
+      type: rnn
+      num_layers: 1
+    action_encoder:  # A^2: learned aggregation of action windows
+      hidden_dims: [64]
+      output_dim: 4
+      final_ln: true
+    regularizer:
+      cov_coeff: 4
+      std_coeff: 8
+      sim_coeff_t: 6
+      idm_coeff: 0.5
+      action_std_coeff: 4.0
+      action_cov_coeff: 2.0
+
+  # Level 3 (coarsest): temporal stride 2 from level 2
+  level_3:
+    temporal_stride: 2
+    encoder:
+      architecture: mlp
+      hidden_dims: [256, 128]
+      output_dim: 128
+    predictor:
+      type: rnn
+      num_layers: 1
+    action_encoder:  # A^3: learned aggregation of action windows
+      hidden_dims: [32]
+      output_dim: 8
+      final_ln: true
+    regularizer:
+      cov_coeff: 2
+      std_coeff: 4
+      sim_coeff_t: 3
+      idm_coeff: 0.25
+      action_std_coeff: 2.0
+      action_cov_coeff: 1.0
+
+  # Per-level loss weights (higher levels can have lower weight)
+  level_weights: [1.0, 1.0, 1.0]
+
+optim:
+  epochs: 12
+  lr: 0.001
+  grad_clip: 2.0
+  weight_decay: 1.e-5
+  lr_scales:
+    level_2: 1.0
+    level_3: 1.0
+probe:
+  state_dims: [0, 1]
+eval:
+  plan_cfg_path: examples/h_ac_video_jepa/cfgs/planning/lvl2_mppi_ni5_ns50_ne10.yaml
+  eval_cfg_path: examples/h_ac_video_jepa/cfgs/eval/two_rooms.yaml
+  unroll_levels: [1, 2, 3]  # Which hierarchy levels to evaluate unrolling for
+
+sweep:
+  param_grid:
+    model.level_1.regularizer.std_coeff: [4, 8, 16]
+    model.level_1.regularizer.sim_coeff_t: [8, 12, 16]
+    model.level_1.regularizer.idm_coeff: [0.5, 1, 2]
+    model.rollout.nsteps: [8, 12]
+    meta.seed: [1, 1000, 10000]

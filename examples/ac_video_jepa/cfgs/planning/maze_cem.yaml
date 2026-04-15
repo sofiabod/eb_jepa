@@ -1,0 +1,22 @@
+eval_tag: maze_cem_randstate_H5_nas5
+logging:
+  tqdm_silent: false
+task_specification:
+  goal_source: random_state
+  obs: rgb
+planner:
+  planner_name: cem
+  num_act_stepped: 5
+  plan_length: 5
+  n_iters: 30
+  num_samples: 300
+  num_elites: 30
+  var_scale: 1.0
+  # max_std: 1.0
+  # temperature: 0.005
+  decode_each_iteration: false
+  planning_objective:
+    objective_type: repr_dist
+    sum_all_diffs: false
+    alpha: 0.
+ctxt_window_time: 3

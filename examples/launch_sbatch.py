@@ -1,3 +1,10 @@
+import os
+
+try:
+    os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["SLURM_LOCALID"]
+except Exception:
+    pass
+
 """
 Unified SLURM launcher for all EB-JEPA examples.
 
@@ -51,32 +58,46 @@ To access the sweep analysis:
 import argparse
 import importlib
 import json
-import os
 import shutil
 from itertools import product
+from pathlib import Path
 
 import submitit
-import wandb
+from omegaconf import OmegaConf
 
-from eb_jepa.training_utils import (
+from eb_jepa.utils.config import (
     get_checkpoints_dir,
-    get_default_dev_name,
-    get_default_sweep_name,
+    get_dataset_name,
+    get_default_run_name,
     get_exp_name,
     get_unified_experiment_dir,
     load_config,
 )
 
-# Default SLURM parameters
-SLURM_DEFAULTS = {
-    "mem_per_gpu": "210G",
+# Cluster-agnostic defaults; override via local/slurm.yaml (see examples/slurm.yaml.example)
+_SLURM_DEFAULTS = {
+    "mem_per_gpu": "80G",
     "cpus_per_task": 16,
     "timeout_min": 24 * 60,
-    "partition": "learn",
+    "partition": None,
     "gpus_per_node": 1,
-    "qos": "lowest",
-    "account": "fair_amaia_cw_video",
+    "qos": None,
+    "account": None,
 }
+
+
+def _load_slurm_config() -> dict:
+    """Load SLURM config from local/slurm.yaml, merging onto cluster-agnostic defaults."""
+    repo_root = Path(__file__).resolve().parent.parent
+    local_cfg = repo_root / "local" / "slurm.yaml"
+    defaults = OmegaConf.create(_SLURM_DEFAULTS)
+    if local_cfg.exists():
+        overrides = OmegaConf.load(local_cfg)
+        defaults = OmegaConf.merge(defaults, overrides)
+    return OmegaConf.to_container(defaults, resolve=True)
+
+
+SLURM_DEFAULTS = _load_slurm_config()
 
 
 # Example-specific configurations
@@ -92,8 +113,13 @@ EXAMPLE_CONFIGS = {
         "metric": "AP_1",
     },
     "ac_video_jepa": {
-        "config": "examples/ac_video_jepa/cfgs/train.yaml",
+        "config": "examples/ac_video_jepa/cfgs/train/two_rooms/vc.yaml",
         "module": "examples.ac_video_jepa.main",
+        "metric": "success_rate",
+    },
+    "h_ac_video_jepa": {
+        "config": "examples/h_ac_video_jepa/cfgs/train/two_rooms/vc.yaml",
+        "module": "examples.h_ac_video_jepa.main",
         "metric": "success_rate",
     },
 }
@@ -107,6 +133,8 @@ def make_executor(
     folder: str,
     job_name: str,
     array_parallelism: int | None = None,
+    gpus: int = 1,
+    nodes: int = 1,
 ) -> submitit.AutoExecutor:
     """Create a submitit executor with standard SLURM parameters."""
     executor = submitit.AutoExecutor(folder=folder, slurm_max_num_timeout=20)
@@ -116,15 +144,21 @@ def make_executor(
         "slurm_mem_per_gpu": SLURM_DEFAULTS["mem_per_gpu"],
         "cpus_per_task": SLURM_DEFAULTS["cpus_per_task"],
         "timeout_min": SLURM_DEFAULTS["timeout_min"],
-        "slurm_partition": SLURM_DEFAULTS["partition"],
-        "slurm_additional_parameters": {
-            "nodes": 1,
-            "ntasks-per-node": 1,
-            "gpus-per-node": SLURM_DEFAULTS["gpus_per_node"],
-            "qos": SLURM_DEFAULTS["qos"],
-            "account": SLURM_DEFAULTS["account"],
-        },
+        "nodes": nodes,
+        "tasks_per_node": gpus,
+        "gpus_per_node": gpus,
     }
+
+    if SLURM_DEFAULTS["partition"] is not None:
+        params["slurm_partition"] = SLURM_DEFAULTS["partition"]
+
+    additional = {}
+    if SLURM_DEFAULTS["qos"] is not None:
+        additional["qos"] = SLURM_DEFAULTS["qos"]
+    if SLURM_DEFAULTS["account"] is not None:
+        additional["account"] = SLURM_DEFAULTS["account"]
+    if additional:
+        params["slurm_additional_parameters"] = additional
 
     if array_parallelism is not None:
         params["slurm_array_parallelism"] = array_parallelism
@@ -150,6 +184,8 @@ def copy_code_folder(code_folder):
         "core",
         "uv.lock",
         "Makefile",
+        ".llms",
+        "CLAUDE.md",
     ]
     # Paths to ignore (matched by name only, applies to any directory with this name)
     ignore_paths = [
@@ -169,6 +205,9 @@ def copy_code_folder(code_folder):
         "eb_jepa_ICLR",
         "datasets",
         "checkpoints",
+        "arxiv",
+        "arxiv_eb2",
+        "arxiv_hierarchy",
     ]
     source_root = os.path.abspath(".")
 
@@ -225,25 +264,40 @@ def print_submission_summary(jobs: list, logs_dir, extra_info: dict | None = Non
 # =============================================================================
 
 
-def run_experiment(example_name: str, cfg, folder=None):
-    """Run the appropriate example based on example_name."""
+def run_experiment(example_name: str, cfg, folder=None, gpus: int = 1):
+    """Run the appropriate example based on example_name.
+
+    Each SLURM task calls this function directly. When gpus > 1,
+    SLURM spawns ntasks-per-node=gpus tasks, and each one calls
+    this function. Distributed init happens inside the training
+    script via setup_distributed().
+    """
     print(f"Current working directory: {os.getcwd()}")
     print(f"EBJEPA_DSETS: {os.environ.get('EBJEPA_DSETS', 'not set')}")
+    print(
+        f"EBJEPA_DATA: {os.environ.get('EBJEPA_DATA', 'not set (using EBJEPA_DSETS)')}"
+    )
+
     module = importlib.import_module(EXAMPLE_CONFIGS[example_name]["module"])
     return module.run(cfg=cfg, folder=folder)
 
 
-def launch_job(example_name: str, fname: str, **kwargs):
+def launch_job(example_name: str, fname: str, gpus: int = 1, nodes: int = 1, **kwargs):
     """Launch a single training job with the given config and overrides."""
     cfg = load_config(fname, kwargs)
-    sweep_name = kwargs.get("sweep_name", get_default_sweep_name())
+    sweep_name = kwargs.get("sweep_name", get_default_run_name("sweep"))
     exp_name = get_exp_name(example_name, cfg)
+    try:
+        dataset_name = get_dataset_name(cfg)
+    except ValueError:
+        dataset_name = ""
 
     folder = get_unified_experiment_dir(
         example_name=example_name,
         sweep_name=sweep_name,
         exp_name=exp_name,
         seed=cfg.meta.seed,
+        dataset_name=dataset_name,
     )
 
     logs_dir, _ = setup_launch_environment(folder, logs_subdir=None)
@@ -251,8 +305,10 @@ def launch_job(example_name: str, fname: str, **kwargs):
     executor = make_executor(
         folder=str(logs_dir),
         job_name=f"{example_name.upper()}",
+        gpus=gpus,
+        nodes=nodes,
     )
-    job = executor.submit(run_experiment, example_name, cfg, folder)
+    job = executor.submit(run_experiment, example_name, cfg, folder, gpus)
 
     print(f"\n✓ Submitted job {job.job_id}")
     print(f"  Experiment folder: {folder}")
@@ -260,19 +316,51 @@ def launch_job(example_name: str, fname: str, **kwargs):
     return job
 
 
+def _dot_notation_to_nested_params(param_grid: dict) -> dict:
+    """Convert flat dot-notation param_grid to WandB nested parameters format.
+
+    Example:
+        {"model.cost.loss.detach_encoder": {"values": [True, False]}}
+        becomes
+        {"model": {"parameters": {"cost": {"parameters": {"loss": {"parameters": {
+            "detach_encoder": {"values": [True, False]}}}}}}}}
+    """
+    result = {}
+    for flat_key, value_spec in param_grid.items():
+        parts = flat_key.split(".")
+        current = result
+        for part in parts[:-1]:
+            if part not in current:
+                current[part] = {"parameters": {}}
+            current = current[part]["parameters"]
+        current[parts[-1]] = value_spec
+    return result
+
+
 def create_wandb_sweep_config(param_grid: dict, metric: str, method: str = "grid"):
-    """Create a wandb sweep configuration from a parameter grid."""
+    """Create a wandb sweep configuration from a parameter grid.
+
+    Converts flat dot-notation keys (e.g., 'model.cost.loss.detach_encoder') to
+    WandB's nested parameters format for proper sweep UI correlation.
+    """
+    normalized_grid = {}
+    for param_name, param_values in param_grid.items():
+        if hasattr(param_values, "__iter__") and not isinstance(
+            param_values, (str, dict)
+        ):
+            normalized_grid[param_name] = {"values": list(param_values)}
+        elif isinstance(param_values, dict):
+            normalized_grid[param_name] = param_values
+        else:
+            normalized_grid[param_name] = {"value": param_values}
+
+    nested_params = _dot_notation_to_nested_params(normalized_grid)
+
     sweep_config = {
         "method": method,
         "metric": {"goal": "maximize", "name": metric},
-        "parameters": {},
+        "parameters": nested_params,
     }
-
-    for param_name, param_values in param_grid.items():
-        if isinstance(param_values, list):
-            sweep_config["parameters"][param_name] = {"values": param_values}
-        elif isinstance(param_values, dict):
-            sweep_config["parameters"][param_name] = param_values
 
     return sweep_config
 
@@ -284,6 +372,8 @@ def launch_sweep(
     array_parallelism: int = 256,
     use_wandb: bool = False,
     wandb_method: str = "grid",
+    gpus: int = 1,
+    nodes: int = 1,
     **base_overrides,
 ):
     """Launch a parameter sweep using submitit. Returns (sweep_id, jobs) if use_wandb else jobs."""
@@ -293,11 +383,13 @@ def launch_sweep(
         print("No parameter combinations to sweep")
         return (None, []) if use_wandb else []
 
-    sweep_name = base_overrides.get("sweep_name", get_default_sweep_name())
+    sweep_name = base_overrides.get("sweep_name", get_default_run_name("sweep"))
 
     # Create wandb sweep if requested
     sweep_id = None
     if use_wandb:
+        import wandb
+
         project_name = "eb_jepa"
         metric = EXAMPLE_CONFIGS[example_name]["metric"]
         sweep_config = create_wandb_sweep_config(param_grid, metric, wandb_method)
@@ -308,17 +400,27 @@ def launch_sweep(
         )
 
     # Setup environment (must happen before chdir)
-    common_dir = get_checkpoints_dir() / example_name / sweep_name
+    base_cfg = load_config(fname, {}, quiet=True)
+    try:
+        dataset_name = get_dataset_name(base_cfg)
+    except ValueError:
+        dataset_name = ""
+    common_dir = get_checkpoints_dir() / example_name
+    if dataset_name:
+        common_dir = common_dir / dataset_name
+    common_dir = common_dir / sweep_name
     logs_subdir = "wandb_sweep_slurm_logs" if use_wandb else "sweep_slurm_logs"
     logs_dir, _ = setup_launch_environment(common_dir, logs_subdir=logs_subdir)
 
     # Store checkpoints dir before chdir (for absolute paths in job configs)
-    original_checkpoints_dir = common_dir.parent.parent.absolute()
+    original_checkpoints_dir = get_checkpoints_dir().absolute()
 
     executor = make_executor(
         folder=str(logs_dir),
         job_name=f"{example_name.upper()}_{'wandb_' if use_wandb else ''}sweep",
         array_parallelism=array_parallelism,
+        gpus=gpus,
+        nodes=nodes,
     )
 
     print(f"\nPreparing {len(all_combinations)} tasks...")
@@ -339,22 +441,124 @@ def launch_sweep(
                 )
 
             cfg = load_config(fname, final_overrides, quiet=True)
-            exp_name = get_exp_name(example_name, cfg)
+            exp_name = get_exp_name(example_name, cfg, param_grid)
             folder = get_unified_experiment_dir(
                 example_name=example_name,
                 sweep_name=sweep_name,
                 exp_name=exp_name,
                 seed=cfg.meta.seed,
+                dataset_name=dataset_name,
                 base_dir=original_checkpoints_dir,
             )
 
-            job = executor.submit(run_experiment, example_name, cfg, folder)
+            job = executor.submit(run_experiment, example_name, cfg, folder, gpus)
             jobs.append(job)
 
     extra_info = {"Sweep ID": sweep_id} if use_wandb else None
     print_submission_summary(jobs, logs_dir, extra_info)
 
     return (sweep_id, jobs) if use_wandb else jobs
+
+
+def launch_eval_sweep(
+    example_name: str,
+    sweep_dir: str,
+    checkpoint_name: str = "latest.pth.tar",
+    array_parallelism: int = 256,
+    filter_pattern: str | None = None,
+    **eval_overrides,
+):
+    """Launch eval-only jobs for all checkpoints in a sweep directory.
+
+    Discovers subdirectories of sweep_dir containing checkpoint_name,
+    loads each run's own config.yaml, sets eval_only_mode=True, and
+    submits them as a SLURM job array.
+
+    Args:
+        example_name: Which example module to run (e.g. "ac_video_jepa").
+        sweep_dir: Path to a sweep directory containing checkpoint subdirs.
+        checkpoint_name: Checkpoint file to look for in each subdir.
+        array_parallelism: Max parallel SLURM array jobs.
+        filter_pattern: Optional regex to filter checkpoint folder names.
+        **eval_overrides: Additional config overrides (e.g. eval.plan_cfg_path).
+    """
+    import re
+    from pathlib import Path
+
+    sweep_dir = Path(sweep_dir)
+    if not sweep_dir.exists():
+        print(f"Error: Sweep directory does not exist: {sweep_dir}")
+        return []
+
+    # Discover checkpoint folders
+    checkpoint_folders = []
+    for subdir in sorted(sweep_dir.iterdir()):
+        if not subdir.is_dir():
+            continue
+        if filter_pattern and not re.search(filter_pattern, subdir.name):
+            continue
+        checkpoint_path = subdir / checkpoint_name
+        config_path = subdir / "config.yaml"
+        if checkpoint_path.exists() and config_path.exists():
+            checkpoint_folders.append(subdir)
+
+    if not checkpoint_folders:
+        print(f"No checkpoint folders found in {sweep_dir} with {checkpoint_name}")
+        return []
+
+    print(f"Found {len(checkpoint_folders)} checkpoint folders to evaluate")
+
+    # Setup environment for eval jobs
+    eval_logs_dir = sweep_dir / "eval_slurm_logs"
+    eval_logs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy code folder once for all eval jobs
+    code_folder = sweep_dir / "eval_code"
+    copy_code_folder(str(code_folder))
+    print(f"Code folder: {code_folder}")
+    os.chdir(code_folder)
+
+    # Use lighter SLURM resources for eval
+    executor = make_executor(
+        folder=str(eval_logs_dir),
+        job_name=f"{example_name.upper()}_eval",
+        array_parallelism=array_parallelism,
+    )
+    # Override with eval-appropriate resources
+    executor.update_parameters(
+        slurm_mem_per_gpu="60G",
+        # timeout_min=120,  # 2 hours
+    )
+
+    print(f"Preparing {len(checkpoint_folders)} eval tasks...")
+    jobs = []
+    with executor.batch():
+        for folder in checkpoint_folders:
+            # Load the checkpoint's own config.yaml
+            config_path = folder / "config.yaml"
+            cfg = load_config(str(config_path), {}, quiet=True)
+
+            # Set eval-only overrides
+            eval_mode_overrides = {
+                "meta.eval_only_mode": True,
+                "meta.load_model": True,
+                "meta.model_folder": str(folder.absolute()),
+                "meta.load_checkpoint": checkpoint_name,
+                # Clear wandb sweep settings from training
+                "logging.wandb_sweep": False,
+                "logging.wandb_sweep_id": None,
+            }
+
+            # Merge with user-provided eval overrides (e.g., eval.plan_cfg_path)
+            final_overrides = {**eval_mode_overrides, **eval_overrides}
+            cfg = load_config(str(config_path), final_overrides, quiet=True)
+
+            # Submit job with the same folder (will use existing folder, add eval results)
+            job = executor.submit(run_experiment, example_name, cfg, folder.absolute())
+            jobs.append(job)
+
+    print_submission_summary(jobs, eval_logs_dir)
+    return jobs
 
 
 if __name__ == "__main__":
@@ -365,7 +569,7 @@ if __name__ == "__main__":
         "--example",
         type=str,
         required=True,
-        choices=["image_jepa", "video_jepa", "ac_video_jepa"],
+        choices=["image_jepa", "video_jepa", "ac_video_jepa", "h_ac_video_jepa"],
         help="Which example to run",
     )
     parser.add_argument(
@@ -404,10 +608,46 @@ if __name__ == "__main__":
         help="Enable full hyperparameter sweep (default: only sweep over 3 seeds)",
     )
     parser.add_argument(
+        "--gpus",
+        type=int,
+        default=1,
+        help="Number of GPUs per node (default: 1, uses torchrun for >1)",
+    )
+    parser.add_argument(
+        "--nodes",
+        type=int,
+        default=1,
+        help="Number of nodes (default: 1, read from config slurm.nodes if set)",
+    )
+    parser.add_argument(
         "--single",
         action="store_true",
         help="Launch a single job (uses dev_YYYYMMDD_HHMM folder)",
     )
+    parser.add_argument(
+        "--eval-sweep",
+        type=str,
+        default=None,
+        help="Path to sweep directory to evaluate all checkpoints in",
+    )
+    parser.add_argument(
+        "--checkpoint-name",
+        type=str,
+        default="latest.pth.tar",
+        help="Checkpoint file to evaluate (default: latest.pth.tar)",
+    )
+    parser.add_argument(
+        "--filter",
+        type=str,
+        default=None,
+        help="Optional regex to filter checkpoint folder names",
+    )
+
+    # SLURM overrides (applied on top of local/slurm.yaml defaults)
+    parser.add_argument("--slurm-partition", type=str, default=None)
+    parser.add_argument("--slurm-qos", type=str, default=None)
+    parser.add_argument("--slurm-account", type=str, default=None)
+    parser.add_argument("--slurm-mem-per-gpu", type=str, default=None)
 
     # Common overrides
     parser.add_argument("--optim.lr", type=float)
@@ -418,6 +658,20 @@ if __name__ == "__main__":
     parser.add_argument("--model.regularizer.std_coeff", type=float)
     parser.add_argument("--model.regularizer.sim_coeff_t", type=float)
     parser.add_argument("--model.regularizer.idm_coeff", type=float)
+
+    # h_ac_video_jepa specific (per-level regularization)
+    parser.add_argument("--model.level_1.regularizer.cov_coeff", type=float)
+    parser.add_argument("--model.level_1.regularizer.std_coeff", type=float)
+    parser.add_argument("--model.level_1.regularizer.sim_coeff_t", type=float)
+    parser.add_argument("--model.level_1.regularizer.idm_coeff", type=float)
+    parser.add_argument("--model.level_2.regularizer.cov_coeff", type=float)
+    parser.add_argument("--model.level_2.regularizer.std_coeff", type=float)
+    parser.add_argument("--model.level_2.regularizer.sim_coeff_t", type=float)
+    parser.add_argument("--model.level_2.regularizer.idm_coeff", type=float)
+    parser.add_argument("--model.level_3.regularizer.cov_coeff", type=float)
+    parser.add_argument("--model.level_3.regularizer.std_coeff", type=float)
+    parser.add_argument("--model.level_3.regularizer.sim_coeff_t", type=float)
+    parser.add_argument("--model.level_3.regularizer.idm_coeff", type=float)
 
     # Use parse_known_args to allow dynamic overrides for any config key
     args, unknown = parser.parse_known_args()
@@ -431,12 +685,9 @@ if __name__ == "__main__":
 
     # Read sweep param_grid from config file
     # Fall back to default 3-seed sweep if not specified in config
-    config_param_grid = base_cfg.get("sweep", {}).get("param_grid", {})
-    if hasattr(config_param_grid, "to_dict"):
-        config_param_grid = config_param_grid.to_dict()
-    elif hasattr(config_param_grid, "__dict__"):
-        # OmegaConf DictConfig - convert to plain dict
-        config_param_grid = dict(config_param_grid)
+    config_param_grid = (base_cfg.get("sweep") or {}).get("param_grid", {})
+    if OmegaConf.is_config(config_param_grid):
+        config_param_grid = OmegaConf.to_container(config_param_grid, resolve=True)
 
     default_seed_sweep = {"meta.seed": [1, 1000, 10000]}
 
@@ -450,6 +701,15 @@ if __name__ == "__main__":
         "sweep_method",
         "full_sweep",
         "single",
+        "eval_sweep",
+        "checkpoint_name",
+        "filter",
+        "gpus",
+        "nodes",
+        "slurm_partition",
+        "slurm_qos",
+        "slurm_account",
+        "slurm_mem_per_gpu",
     }
     overrides = {
         k: v for k, v in vars(args).items() if v is not None and k not in excluded_keys
@@ -466,7 +726,11 @@ if __name__ == "__main__":
                 try:
                     value = json.loads(value)
                 except json.JSONDecodeError:
-                    pass  # Keep as string
+                    # Handle Python-style booleans (True/False)
+                    if value == "True":
+                        value = True
+                    elif value == "False":
+                        value = False
                 overrides[key] = value
                 i += 2
             else:
@@ -476,10 +740,48 @@ if __name__ == "__main__":
         else:
             i += 1
 
+    # Apply CLI SLURM overrides
+    for cli_key, slurm_key in [
+        ("slurm_partition", "partition"),
+        ("slurm_qos", "qos"),
+        ("slurm_account", "account"),
+        ("slurm_mem_per_gpu", "mem_per_gpu"),
+    ]:
+        val = getattr(args, cli_key)
+        if val is not None:
+            SLURM_DEFAULTS[slurm_key] = val
+
+    # Read gpus/nodes from config if not overridden on CLI
+    gpus = args.gpus
+    if gpus == 1 and base_cfg.get("slurm", {}).get("gpus"):
+        gpus = base_cfg.slurm.gpus
+    nodes = args.nodes
+    if nodes == 1 and base_cfg.get("slurm", {}).get("nodes"):
+        nodes = base_cfg.slurm.nodes
+
     # Determine folder name based on mode
-    if args.single:
+    if args.eval_sweep:
+        # Eval sweep: evaluate all checkpoints in a directory
+        print(f"Example: {example_name}")
+        print(f"Eval sweep directory: {args.eval_sweep}")
+        print(f"Checkpoint name: {args.checkpoint_name}")
+        if args.filter:
+            print(f"Filter pattern: {args.filter}")
+        if overrides:
+            print(f"Eval overrides: {overrides}")
+
+        jobs = launch_eval_sweep(
+            example_name=example_name,
+            sweep_dir=args.eval_sweep,
+            checkpoint_name=args.checkpoint_name,
+            array_parallelism=args.array_parallelism,
+            filter_pattern=args.filter,
+            **overrides,
+        )
+    elif args.single:
         # Single job: use dev_ prefix
-        sweep_name = get_default_dev_name()
+        prefix = base_cfg.logging.get("exp_tag") or "dev"
+        sweep_name = get_default_run_name(prefix)
         param_grid = None  # No sweep, single job
     elif args.sweep:
         # Custom sweep name: normalize to have sweep_ prefix
@@ -490,11 +792,18 @@ if __name__ == "__main__":
             param_grid = default_seed_sweep
     else:
         # Default: 3-seed sweep with auto-generated name
-        sweep_name = get_default_sweep_name()
+        prefix = base_cfg.logging.get("exp_tag") or "sweep"
+        sweep_name = get_default_run_name(prefix)
         if args.full_sweep:
             param_grid = config_param_grid if config_param_grid else default_seed_sweep
         else:
             param_grid = default_seed_sweep
+
+    # Skip the rest for eval sweep mode
+    if args.eval_sweep:
+        import sys
+
+        sys.exit(0)
 
     overrides["sweep_name"] = sweep_name
     overrides["logging.wandb_group"] = sweep_name
@@ -511,7 +820,7 @@ if __name__ == "__main__":
 
     if args.single:
         # Launch single job
-        job = launch_job(example_name, fname, **overrides)
+        job = launch_job(example_name, fname, gpus=gpus, nodes=nodes, **overrides)
     elif args.use_wandb_sweep:
         sweep_id, jobs = launch_sweep(
             example_name,
@@ -520,6 +829,8 @@ if __name__ == "__main__":
             array_parallelism=args.array_parallelism,
             use_wandb=True,
             wandb_method=args.sweep_method,
+            gpus=gpus,
+            nodes=nodes,
             **overrides,
         )
     else:
@@ -528,5 +839,7 @@ if __name__ == "__main__":
             fname,
             param_grid,
             array_parallelism=args.array_parallelism,
+            gpus=gpus,
+            nodes=nodes,
             **overrides,
         )

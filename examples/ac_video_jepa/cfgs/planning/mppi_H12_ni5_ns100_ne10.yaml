@@ -1,0 +1,28 @@
+eval_tag: mppi_H12_ni5_ns100_ne10
+logging:
+  tqdm_silent: false
+task_specification:
+  goal_source: random_state
+  obs: rgb
+planner:
+  planner_name: mppi
+  num_act_stepped: 1
+  plan_length: 12
+  n_iters: 5
+  num_samples: 100
+  num_elites: 10
+  momentum_mean: 0.0
+  momentum_std: 0.5
+  max_norms:
+    - 2.45
+  max_norm_dims:
+    - [0, 1]
+  var_scale: 1.5
+  max_std: 2.0
+  temperature: 0.005
+  decode_each_iteration: false
+  planning_objective:
+    objective_type: repr_dist
+    sum_all_diffs: false
+    alpha: 0.
+ctxt_window_time: 1

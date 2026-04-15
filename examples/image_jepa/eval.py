@@ -20,12 +20,19 @@ class LinearProbe(nn.Module):
 
 
 def evaluate_linear_probe(model, linear_probe, val_loader, device, use_amp=True):
-    """Evaluate linear probe on validation set."""
+    """Evaluate linear probe on validation set.
+
+    Returns:
+        top1: Top-1 accuracy (%).
+        top5: Top-5 accuracy (%).
+        avg_loss: Mean cross-entropy over batches.
+    """
     model.eval()
     linear_probe.eval()
 
     total_loss = 0
-    correct = 0
+    correct_top1 = 0
+    correct_top5 = 0
     total = 0
 
     with torch.no_grad():
@@ -40,11 +47,16 @@ def evaluate_linear_probe(model, linear_probe, val_loader, device, use_amp=True)
             loss = F.cross_entropy(outputs, target)
 
             total_loss += loss.item()
-            _, predicted = outputs.max(1)
             total += target.size(0)
-            correct += predicted.eq(target).sum().item()
 
-    accuracy = 100.0 * correct / total
+            _, predicted = outputs.max(1)
+            correct_top1 += predicted.eq(target).sum().item()
+
+            _, top5_pred = outputs.topk(5, dim=1)
+            correct_top5 += top5_pred.eq(target.unsqueeze(1)).any(1).sum().item()
+
+    top1 = 100.0 * correct_top1 / total
+    top5 = 100.0 * correct_top5 / total
     avg_loss = total_loss / len(val_loader)
 
-    return accuracy, avg_loss
+    return top1, top5, avg_loss

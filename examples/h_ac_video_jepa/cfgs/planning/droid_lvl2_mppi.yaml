@@ -1,0 +1,50 @@
+eval_tag: h_droid_mppi_lvl2_offline
+logging:
+  tqdm_silent: false
+  verbose: false
+task_specification:
+  goal_source: dset
+  eval_mode: offline
+  obs: rgb
+planner:
+  type: hierarchical
+  base_planner: mppi
+  subgoal_mode: single
+  start_level: 2
+  action_clip_sigma: 3.0
+  num_act_stepped: 3
+  level_configs:
+    level_1_planner:
+      plan_length: 3
+      n_iters: 30
+      num_samples: 300
+      num_elites: 30
+      momentum_mean: 0.
+      momentum_std: 0.
+    level_2_planner:
+      plan_length: 3
+      n_iters: 30
+      num_samples: 300
+      num_elites: 30
+      momentum_mean: 0.
+      momentum_std: 0.
+      latent_action_stats_path: level_2_action_stats.pt
+  max_norms:
+    - 1
+    - 1
+  max_norm_dims:
+    - [0, 1, 2, 3, 4, 5]
+    - [6]
+  var_scale: 1.5
+  max_std: 2.0
+  temperature: 0.005
+  decode_each_iteration: true
+  planning_objective:
+    objective_type: hierarchical_repr_dist
+    distance: l2
+    sum_all_diffs: false
+    alpha: 0.
+    subgoal_weight: 1.0
+    goal_weight: 0.5
+ctxt_window_time: 1
+seed: 1

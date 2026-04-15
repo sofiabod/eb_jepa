@@ -1,0 +1,55 @@
+# Image SIGReg (BCS) Training Configuration
+# Train a self-supervised image representation model on ImageNet1k with ResNet-50
+# Sweep findings: only lmbd=0.01 works (lmbd>=0.1 collapses); ph512 po256 best
+slurm:
+  gpus: 8
+
+meta:
+  seed: 42
+  device: auto
+
+data:
+  dataset: imagenet1k
+  data_dir: ${EBJEPA_DSETS}/ImageNet
+  batch_size: 2048
+  num_workers: 16
+
+model:
+  type: resnet
+  resnet_arch: resnet50
+  compile: true
+
+  use_projector: true
+  proj_hidden_dim: 2048
+  proj_output_dim: 128
+
+loss:
+  type: bcs
+  lmbd: 0.01
+
+optim:
+  type: adamw
+  epochs: 300
+  lr: 5.0e-4
+  weight_decay: 5.0e-4
+  warmup_epochs: 10
+  warmup_start_lr: 5.0e-7
+  min_lr: 5.0e-7
+
+logging:
+  log_wandb: true
+  wandb_group:
+  log_every: 10
+  save_every: 25
+  tqdm_silent: false
+
+training:
+  use_amp: true
+  dtype: bfloat16
+
+sweep:
+  param_grid:
+    model.proj_hidden_dim: [1024, 2048]
+    model.proj_output_dim: [64, 128, 256]
+    loss.lmbd: [0.01, 0.05]
+    optim.lr: [1.0e-3, 5.0e-4]

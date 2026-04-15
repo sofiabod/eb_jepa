@@ -1,0 +1,12 @@
+meta:
+  num_eval_episodes: 64
+  plan_suffix: _franka_custom_offline
+data:
+  env_name: franka_custom
+  droid_fraction: 1.0
+  train_fraction: 0.0
+  seed: 234
+  batch_size: 8
+  val_batch_size: 2
+  num_workers: 0
+  persistent_workers: false

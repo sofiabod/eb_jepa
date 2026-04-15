@@ -61,12 +61,22 @@ Predict next image representation in a sequence.
 
 ### [AC Video JEPA](examples/ac_video_jepa/README.md)
 
-JEPA for world modeling + planning in Two Rooms environment.
+JEPA for world modeling + planning in Two Rooms, PushT, and PointMaze. Includes reproduction of [LE-WM](https://arxiv.org/abs/2603.19312) ([code](https://github.com/lucas-maes/le-wm)).
 
 | Planning Episode | Task Definition |
 |------------------|-----------------|
 | <img src="examples/ac_video_jepa/assets/top_randw_agent_steps_succ.gif" alt="Successful planning episode" width="155" /> | <img src="examples/ac_video_jepa/assets/top_randw_state.png" alt="Episode task definition" width="300" /> |
 | *Successful planning episode* | *From init to goal state* |
+
+### [Hierarchical AC Video JEPA](examples/h_ac_video_jepa/README.md)
+
+Multi-level hierarchical JEPA with top-down planning. Extends AC Video JEPA with L encoder/predictor levels at different temporal scales and hierarchical goal decomposition. Achieves 97% success on Two Rooms with Random Wall.
+
+<p align="center">
+  <img src="examples/h_ac_video_jepa/assets/h_planning_schema_statecost.png" alt="Hierarchical planning schema" width="600">
+</p>
+
+__Top-down hierarchical planning (2-level example, $L = 2$).__
 
 ---
 
@@ -96,13 +106,19 @@ uv pip install -e . --group dev
 Add these to your `~/.bashrc` for persistent configuration.
 
 ```bash
-# Required for SLURM jobs to find datasets
-export EBJEPA_DSETS=/path/to/eb_jepa/datasets
-# Optional: Directory for checkpoints and logs
+# Dataset root (required): all datasets default to this path
+export EBJEPA_DSETS=/path/to/datasets
+# Checkpoints and logs
 export EBJEPA_CKPTS=/path/to/checkpoints
+# Optional: override dataset root for large robot datasets (DROID, PushT, etc.)
+# Defaults to EBJEPA_DSETS if not set.
+export EBJEPA_DATA=/path/to/large/datasets
+# Optional: base directory for local model repos (e.g. DINOv3 hub).
+# Defaults to $HOME if not set.
+# export EBJEPA_HOME=/path/to/eb-jepa-home
 ```
 
-
+> **Multi-GPU note**: The codebase supports multi-GPU training via PyTorch DDP on a single node. Multi-node distributed training is not yet supported.
 
 ---
 
@@ -112,7 +128,16 @@ export EBJEPA_CKPTS=/path/to/checkpoints
 
 ```bash
 # Local training
-python -m examples.{image_jepa,video_jepa,ac_video_jepa}.main
+python -m examples.{image_jepa,video_jepa,ac_video_jepa,h_ac_video_jepa}.main
+
+# AC Video JEPA on Two Rooms
+python -m examples.ac_video_jepa.main --fname examples/ac_video_jepa/cfgs/train/two_rooms/vc.yaml
+
+# Hierarchical AC Video JEPA on Two Rooms
+python -m examples.h_ac_video_jepa.main --fname examples/h_ac_video_jepa/cfgs/train/two_rooms/vc.yaml
+
+# AC Video JEPA on DROID (requires EBJEPA_DATA set)
+python -m examples.ac_video_jepa.main --fname examples/ac_video_jepa/cfgs/train/droid/vits16_patch384_lewm.yaml
 ```
 > Our default configs are tuned for H100 GPUs. With older GPUs (e.g., A100, V100), you may need to reduce batch size to fit in memory.
 
@@ -145,7 +170,7 @@ checkpoints/
 
 | Command | Description |
 |---------|-------------|
-| `--example {name}` | Choose: `image_jepa`, `video_jepa`, `ac_video_jepa` |
+| `--example {name}` | Choose: `image_jepa`, `video_jepa`, `ac_video_jepa`, `h_ac_video_jepa` |
 | `--fname {path}` | Run the sweep specified in the config at `{path}` |
 | `--single` | Launch single job (dev mode) |
 | `--sweep {name}` | Custom sweep name |
@@ -170,7 +195,7 @@ python -m examples.launch_sbatch --example image_jepa --fname examples/image_jep
 python -m examples.launch_sbatch --example image_jepa --fname examples/image_jepa/cfgs/default.yaml --use-wandb-sweep
 ```
 
-Replace `image_jepa` with `ac_video_jepa` or `video_jepa` for other examples.
+Replace `image_jepa` with `ac_video_jepa`, `h_ac_video_jepa`, or `video_jepa` for other examples.
 
 **Full Sweep Configuration:** The `--full-sweep` flag reads the `sweep.param_grid` section from the example's YAML config file (e.g., `examples/image_jepa/cfgs/default.yaml`). Without this flag, only a 3-seed sweep is launched. To customize sweep parameters, edit the `sweep` section in the config:
 
@@ -198,9 +223,116 @@ For detailed wandb sweep analysis (parallel coordinates, hyperparameter importan
 1. Use `--use-wandb-sweep` flag when launching
 2. Go to wandb web UI → left pane → **"Sweeps"** → click your sweep name
 
-**SLURM Configuration:** To customize SLURM parameters (partition, account, memory, etc.), edit the `SLURM_DEFAULTS` dictionary at the top of `examples/launch_sbatch.py`.
+**SLURM Configuration:** Copy the template and edit for your cluster:
+```bash
+cp examples/slurm.yaml.example local/slurm.yaml
+# Edit local/slurm.yaml with your cluster's partition, account, etc.
+```
+See [`examples/slurm.yaml.example`](examples/slurm.yaml.example) for all available options.
 
 </details>
+
+---
+
+## 📦 Datasets
+
+The codebase supports the following datasets:
+
+| Dataset | Domain | Observations | Actions | Example |
+|---------|--------|-------------|---------|---------|
+| **CIFAR-10** | Natural images | 32×32 RGB | N/A | `image_jepa` |
+| **Moving MNIST** | Synthetic video | 64×64 grayscale | N/A | `video_jepa` |
+| **Two Rooms** | 2D navigation | 65×65 RGB | 2D velocity | `ac_video_jepa`, `h_ac_video_jepa` |
+| **DROID** | Real robot manipulation | Multi-view RGB video | 7-DoF delta poses | `ac_video_jepa`, `h_ac_video_jepa` |
+| **PushT** | 2D pushing | 96×96 RGB | 2D position | `ac_video_jepa` |
+| **PointMaze** | 2D maze navigation | 64×64 RGB | 2D velocity | `ac_video_jepa` |
+| **Franka Custom** | Real robot manipulation | Multi-view RGB | 7-DoF delta poses | `ac_video_jepa`, `h_ac_video_jepa` |
+| **RoboCasa** | Kitchen manipulation | Multi-view RGB | 7-DoF delta poses | `ac_video_jepa` |
+
+> **Note:** RoboCasa dataset and environment integration is partially implemented but not yet tested end-to-end.
+
+<details>
+<summary><b>Downloading PushT / PointMaze / Franka Custom datasets</b></summary>
+
+PushT, PointMaze, and Franka Custom are hosted on the [jepa-wms HuggingFace repository](https://huggingface.co/datasets/facebook/jepa-wms). To download them, clone [jepa-wms](https://github.com/facebookresearch/jepa-wms) and run:
+
+```bash
+# From the jepa-wms repo
+python src/scripts/download_data.py --dataset pusht pointmaze franka
+```
+
+Then place the downloaded directories under `$EBJEPA_DATA`.
+
+> **Franka Custom** is used for offline evaluation on real robot data (see `examples/ac_video_jepa/cfgs/eval/franka_custom.yaml` and `examples/h_ac_video_jepa/cfgs/eval/franka_custom.yaml`).
+</details>
+
+<details>
+<summary><b>Downloading the DROID dataset</b></summary>
+
+DROID requires separate download via `gsutil`. Follow the [official instructions](https://droid-dataset.github.io/droid/the-droid-dataset) (requires `uv pip install gsutil`).
+We only use the left camera, so you can exclude stereo and SVO files:
+
+```bash
+# Non-stereo HD video only (5.6TB, excluding stereo video & raw SVO cam files)
+gsutil -m rsync -r -x ".*SVO.*|.*stereo.*\.mp4$" "gs://gresearch/robotics/droid_raw" <path_to_your_target_dir>
+```
+
+After downloading, generate the paths CSV required by the dataloader using the script from [jepa-wms](https://github.com/facebookresearch/jepa-wms):
+
+```bash
+# From the jepa-wms repo
+python src/scripts/generate_droid_paths.py \
+    --droid_root <path_to_your_target_dir>/droid_raw/1.0.1 \
+    --output_path $EBJEPA_DATA/DROID/droid_paths.csv \
+    --num_workers 16
+```
+
+This scans the dataset directory and creates a CSV listing all valid episode paths.
+</details>
+
+See [`eb_jepa/data/README.md`](eb_jepa/data/README.md)
+
+> Our dataset integrations, environment wrappers, and planning evaluation protocol take inspiration from [jepa-wms](https://github.com/facebookresearch/jepa-wms).
+
+---
+
+## 🏗️ Architecture
+
+### Key Files
+
+| Directory | Contents |
+|-----------|----------|
+| `eb_jepa/jepa.py` | Core JEPA classes: `JEPAbase`, `JEPA`, `JEPAProbe` |
+| `eb_jepa/h_jepa.py` | Hierarchical JEPA: `HierarchicalJEPA` |
+| `eb_jepa/builders.py` | Shared builder functions for model components |
+| `eb_jepa/models/` | `encoders.py`, `predictors.py`, `decoders.py`, `components.py`, `probes.py`, `nn.py` |
+| `eb_jepa/losses/` | `anticollapse.py` (VCReg, SIGReg), `prediction.py`, `regularizers.py` (VC+IDM) |
+| `eb_jepa/planning/` | `agent.py` (GCAgent), `optimizers.py` (MPPI, CEM, GD, Adam), `objectives.py`, `evaluation.py` |
+| `eb_jepa/data/` | Dataset implementations, `traj_dset.py`, `utils.py`, transforms |
+| `eb_jepa/envs/` | Environment wrappers for Two Rooms, PushT, PointMaze, DROID |
+| `eb_jepa/utils/` | `config.py`, `checkpoint.py`, `distributed.py`, `logging.py`, `training.py`, `schedulers.py` |
+| `eb_jepa/vis/` | Visualization: `frames.py`, `plots.py` |
+| `examples/` | Self-contained examples with configs, training scripts, and READMEs |
+| `scripts/` | Analysis and visualization scripts (see below) |
+
+---
+
+## 🔧 Scripts
+
+The `scripts/` directory contains standalone analysis and visualization tools:
+
+| Script | Description |
+|--------|-------------|
+| `scripts/analyze_training_sweep.py` | Analyze training sweep results: hyperparameter importance, correlations, Pareto fronts |
+| `scripts/analyze_planning_sweep.py` | Analyze planning evaluation sweeps: compare planning configs across checkpoints |
+| `scripts/visualize_planning_cost_heatmap.py` | CLI wrapper for planning cost heatmaps (logic in `eb_jepa.vis.heatmaps`) |
+
+Run any script with `--help` for usage details:
+```bash
+python -m scripts.analyze_training_sweep --help
+```
+
+---
 
 ## 🧪 Running test cases
 
@@ -221,9 +353,9 @@ Before contributing, please format your code with the following tools:
 # Remove unused imports
 autoflake --remove-all-unused-imports -r --in-place .
 # Sort imports
-python -m isort eb_jepa examples tests
+python -m isort eb_jepa examples tests scripts
 # Format code
-python -m black eb_jepa examples tests
+python -m black eb_jepa examples tests scripts
 ```
 
 ## 📚 Citing EB-JEPA

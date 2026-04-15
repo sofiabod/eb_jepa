@@ -1,0 +1,57 @@
+# Image JEPA (VICReg) Training Configuration
+# Reproduces VICReg paper (Bardes et al., 2022) on ImageNet1k with ResNet-50
+# Reference: https://arxiv.org/abs/2105.04906
+slurm:
+  gpus: 8
+
+meta:
+  seed: 42
+  device: auto
+
+data:
+  dataset: imagenet1k
+  data_dir: ${EBJEPA_DSETS}/ImageNet
+  batch_size: 2048
+  num_workers: 16
+
+model:
+  type: resnet
+  resnet_arch: resnet50
+  compile: true
+
+  use_projector: true
+  proj_hidden_dim: 8192
+  proj_output_dim: 8192
+
+loss:
+  type: vicreg
+  std_coeff: 1.0
+  cov_coeff: 80.0
+
+optim:
+  type: lars
+  epochs: 100
+  lr: 2.4               # total_batch/256 * base_lr = 2048/256 * 0.2
+  weight_decay: 1.0e-6
+  warmup_epochs: 10
+  warmup_start_lr: 0.0
+  min_lr: 0.002
+
+logging:
+  log_wandb: true
+  wandb_group:
+  log_every: 10
+  save_every: 25
+  tqdm_silent: false
+
+training:
+  use_amp: true
+  dtype: bfloat16
+
+sweep:
+  param_grid:
+    loss.cov_coeff: [0.1, 1, 10, 80]
+    # model.proj_hidden_dim: [512, 1024, 2048, 4096]
+    # model.proj_output_dim: [512, 1024, 2048, 4096]
+    # optim.lr: [1, 1.6, 2]
+    # meta.seed: [1, 1000]

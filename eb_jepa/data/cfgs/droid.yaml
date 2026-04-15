@@ -1,0 +1,63 @@
+# DROID robot manipulation dataset configuration.
+# Real-world 7-DoF manipulation videos from the DROID dataset.
+# These defaults are merged with overrides from train.yaml or eval.yaml.
+
+# Dataset properties
+action_dim: 7  # 7-DoF delta poses (xyz, rotation, gripper)
+num_channels: 3  # RGB
+img_size: 256  # target resize for inconsistent DROID resolutions
+
+# Dataset path
+data_path: ${EBJEPA_DATA}/DROID/droid_paths.csv  # Path to CSV file with video paths
+
+# Camera configuration
+camera_views: ["left_mp4_path", "right_mp4_path"]  # List of camera views to use
+  # Options: ["wrist_mp4_path", "left_mp4_path", "right_mp4_path"]
+
+# Video loading
+fps: 5  # Target FPS for video loading
+frameskip: 1  # Skip every N frames when loading
+action_skip: 1  # Skip every N frames for actions
+
+# Normalization
+normalize_action: true  # Normalize actions/states to zero mean unit variance
+
+# MPK dataset (alternative format)
+mpk_dset: false  # Set to true for MPK-format datasets
+mpk_manifest_patterns: null  # Glob patterns for MPK dataset files
+  # Example: ["**/*.h5"]
+
+# Action format conversion
+droid_to_rcasa_action_format: 1  # Action repeat factor for RoboCasa format
+camera_frame: false  # Transform poses to camera frame
+
+# Dataset fraction (for debugging/ablation)
+droid_fraction: 1.0  # Fraction of dataset to use (1.0 = use all)
+seed: 42  # Random seed for reproducibility
+
+# Train/val split
+train_fraction: 0.9  # Fraction of data for training
+
+# Trajectory slicing
+num_frames: 10  # Number of frames per trajectory slice
+num_frames_val: null  # Number of frames for validation (null = use num_frames)
+process_actions: "concat"  # How to process actions: "concat" or "sum"
+
+# Transform settings (can be overridden from train configs)
+transform:
+  random_horizontal_flip: false
+  random_resize_aspect_ratio: [1.0, 1.0]
+  random_resize_scale: [1.0, 1.0]
+  reprob: 0.0
+  auto_augment: false
+  motion_shift: false
+  normalize: null
+  do_255_to_1: false
+
+# Dataloader settings
+batch_size: 16
+val_batch_size: 4  # Validation batch size
+num_workers: 4  # Number of dataloader workers
+pin_mem: true  # Pin memory for faster GPU transfer
+persistent_workers: false  # Keep workers alive between epochs
+drop_last: true  # Drop incomplete batches

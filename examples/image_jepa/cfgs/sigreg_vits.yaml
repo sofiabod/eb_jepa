@@ -1,0 +1,55 @@
+# Image SIGReg (BCS) ViT-S Training Configuration
+# Train a self-supervised image representation model on CIFAR-10 using BCS loss with ViT-S
+
+meta:
+  seed: 42
+  device: auto  # auto, cuda, or cpu
+
+data:
+  dataset: cifar10
+  batch_size: 512
+  num_workers: 16
+
+model:
+  # Backbone
+  type: vit_s
+  patch_size: 2       # For CIFAR-10 32x32 images
+
+  # Projector
+  use_projector: true
+  proj_hidden_dim: 2048
+  proj_output_dim: 128
+
+loss:
+  type: bcs
+  lmbd: 0.1
+
+optim:
+  type: adamw         # lars or adamw
+  epochs: 300
+  lr: 0.001
+  weight_decay: 1.0e-4
+  warmup_epochs: 10
+  warmup_start_lr: 3.0e-5
+  min_lr: 0.0
+  schedule_per_step: false
+
+logging:
+  log_wandb: true
+  wandb_group:        # Set to group runs (e.g., for seed averaging)
+  log_every: 10       # Log every N epochs
+  save_every: 50      # Save checkpoint every N epochs
+  tqdm_silent: false  # Disable tqdm progress bars
+
+training:
+  use_amp: true      # Use automatic mixed precision
+  dtype: bfloat16      # float16 or bfloat16
+
+# --- Parameters used when running with --full-sweep
+# By default, only the parameters specified above are used
+sweep:
+  param_grid:
+    optim.lr: [0.0003, 0.001, 0.003]
+    # optim.lr: [0.1, 0.3]
+    model.proj_output_dim: [64, 128, 256]
+    # loss.lmbd: [0.01, 0.1, 1]

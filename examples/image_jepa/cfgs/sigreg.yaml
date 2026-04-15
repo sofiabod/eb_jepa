@@ -23,15 +23,17 @@ model:
 loss:
   type: bcs          # vicreg or bcs
   # BCS loss weight
-  lmbd: 10.0
+  lmbd: 0.1
 
 optim:
+  type: lars
   epochs: 300
   lr: 0.3
   weight_decay: 1.0e-4
   warmup_epochs: 10
   warmup_start_lr: 3.0e-5
   min_lr: 0.0
+  schedule_per_step: false
 
 logging:
   log_wandb: true
@@ -53,5 +55,5 @@ sweep:
     model.use_projector: [true, false]
     model.proj_hidden_dim: [64, 128, 256, 512, 1024, 2048, 4096]
     model.proj_output_dim: [64, 128, 256, 512, 1024, 2048, 4096]
-    loss.lmbd: [0.1,1.0, 10.0, 100.0]
+    loss.lmbd: [0.01, 0.1, 1, 10]
     meta.seed: [1, 1000, 10000]

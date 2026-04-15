@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from eb_jepa.losses import (
+from eb_jepa.losses.anticollapse import (
     CovarianceLoss,
     HingeStdLoss,
     VCLoss,

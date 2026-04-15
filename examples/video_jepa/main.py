@@ -5,43 +5,64 @@ Train a self-supervised video prediction model on Moving MNIST using
 Joint Embedding Predictive Architecture (JEPA) with VC regularization.
 """
 
+import os
+
+try:
+    os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["SLURM_LOCALID"]
+except Exception:
+    pass
+
+from itertools import islice
 from pathlib import Path
 
 import fire
+import torch
 import torch.nn as nn
 from omegaconf import OmegaConf
-from torch.optim import Adam
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from eb_jepa.architectures import (
+from eb_jepa.builders import build_optimizer
+from eb_jepa.jepa import JEPA, JEPAProbe
+from eb_jepa.losses.anticollapse import VCLoss
+from eb_jepa.losses.prediction import SquareLossSeq
+from eb_jepa.models.components import (
     DetHead,
     Projector,
     ResNet5,
     ResUNet,
     StateOnlyPredictor,
 )
-from eb_jepa.datasets.moving_mnist import MovingMNISTDet
-from eb_jepa.image_decoder import ImageDecoder
-from eb_jepa.jepa import JEPA, JEPAProbe
-from eb_jepa.logging import get_logger
-from eb_jepa.losses import SquareLossSeq, VCLoss
-from eb_jepa.training_utils import (
-    get_default_dev_name,
-    get_exp_name,
-    get_unified_experiment_dir,
-    load_checkpoint,
+from eb_jepa.models.decoders import ImageDecoder
+from eb_jepa.utils.checkpoint import resume_training, save_training_state
+from eb_jepa.utils.config import (
     load_config,
     log_config,
     log_data_info,
     log_epoch,
     log_model_info,
-    save_checkpoint,
+    resolve_experiment_folder,
+)
+from eb_jepa.utils.distributed import (
+    cleanup_distributed,
+    local_batch_size,
+    make_sampler,
+    setup_distributed,
+    unwrap_model,
+    unwrap_state_dict,
+    wrap_ddp,
+)
+from eb_jepa.utils.logging import get_logger
+from eb_jepa.utils.training import (
+    EffectiveRankAccumulator,
+    optimizer_step,
+    setup_amp,
     setup_device,
     setup_seed,
     setup_wandb,
 )
 from examples.video_jepa.eval import validation_loop
+from examples.video_jepa.moving_mnist import MovingMNISTDet
 
 logger = get_logger(__name__)
 
@@ -65,31 +86,14 @@ def run(
     if cfg is None:
         cfg = load_config(fname, overrides if overrides else None)
 
+    # Distributed setup
+    local_rank, world_size, is_main = setup_distributed()
+
     # Setup
     device = setup_device(cfg.meta.device)
-    setup_seed(cfg.meta.seed)
+    setup_seed(cfg.meta.seed, rank=local_rank)
 
-    # Create experiment directory using unified structure (if not provided)
-    if folder is None:
-        if cfg.meta.get("model_folder"):
-            exp_dir = Path(cfg.meta.model_folder)
-            folder_name = exp_dir.name
-            exp_name = folder_name.rsplit("_seed", 1)[0]
-        else:
-            sweep_name = get_default_dev_name()
-            exp_name = get_exp_name("video_jepa", cfg)
-            exp_dir = get_unified_experiment_dir(
-                example_name="video_jepa",
-                sweep_name=sweep_name,
-                exp_name=exp_name,
-                seed=cfg.meta.seed,
-            )
-    else:
-        exp_dir = Path(folder)
-        exp_dir.mkdir(parents=True, exist_ok=True)
-        # Extract exp_name from folder name by removing _seed{seed} suffix
-        folder_name = exp_dir.name  # e.g., "resnet_std10.0_cov100.0_seed1"
-        exp_name = folder_name.rsplit("_seed", 1)[0]  # e.g., "resnet_std10.0_cov100.0"
+    exp_dir, exp_name = resolve_experiment_folder("video_jepa", cfg, folder)
 
     wandb_run = setup_wandb(
         project="eb_jepa",
@@ -98,22 +102,25 @@ def run(
         run_name=exp_name,
         tags=["video_jepa", f"seed_{cfg.meta.seed}"],
         group=cfg.logging.get("wandb_group"),
-        enabled=cfg.logging.log_wandb,
+        enabled=cfg.logging.log_wandb and is_main,
         sweep_id=cfg.logging.get("wandb_sweep_id"),
     )
 
     # Load datasets
     train_set = MovingMNISTDet(split="train")
     val_set = MovingMNISTDet(split="val")
+    per_gpu_bs = local_batch_size(cfg.data.batch_size)
+    sampler = make_sampler(train_set)
     train_loader = DataLoader(
         train_set,
-        batch_size=cfg.data.batch_size,
-        shuffle=True,
+        batch_size=per_gpu_bs,
+        shuffle=(sampler is None),
+        sampler=sampler,
         num_workers=cfg.data.num_workers,
     )
     val_loader = DataLoader(
         val_set,
-        batch_size=cfg.data.batch_size,
+        batch_size=per_gpu_bs,
         shuffle=False,
         num_workers=cfg.data.num_workers,
     )
@@ -150,45 +157,74 @@ def run(
     detection_head.train()
     pixel_decoder.train()
 
+    # Mixed precision (video_jepa doesn't use AMP but we need a scaler for optimizer_step)
+    _, _, scaler = setup_amp(cfg, device)
+
     # Set learning rates for different components
     # Lower learning rate for pixel decoder to prevent overfitting
-    optimizer = Adam(
-        [
-            {"params": jepa.parameters(), "lr": cfg.optim.lr},
-            {"params": pixel_decoder.head.parameters(), "lr": cfg.optim.lr / 10},
-            {"params": detection_head.head.parameters(), "lr": cfg.optim.lr},
-        ]
-    )
+    param_groups = [
+        {"params": jepa.parameters(), "lr": cfg.optim.lr},
+        {"params": pixel_decoder.head.parameters(), "lr": cfg.optim.lr / 10},
+        {"params": detection_head.head.parameters(), "lr": cfg.optim.lr},
+    ]
+    optimizer = build_optimizer(cfg.optim, param_groups)
 
-    # Log configuration
+    # Save and log configuration
+    if is_main:
+        config_path = exp_dir / "config.yaml"
+        OmegaConf.save(cfg, config_path)
+        logger.info(f"Saved complete config to {config_path}")
     log_config(cfg)
 
-    # Load checkpoint if requested
-    start_epoch = 0
-    global_step = 0
-    if cfg.meta.get("load_model"):
-        ckpt_path = exp_dir / cfg.meta.get("load_checkpoint", "latest.pth.tar")
-        ckpt_info = load_checkpoint(ckpt_path, jepa, optimizer, device=device)
-        start_epoch = ckpt_info.get("epoch", 0)
-        global_step = ckpt_info.get("step", 0)
+    # Auto-resume from checkpoint (no-op if no checkpoint exists)
+    start_epoch, ckpt_info = resume_training(
+        exp_dir,
+        jepa,
+        optimizer,
+        device=device,
+        load_checkpoint_name=cfg.meta.get("load_checkpoint", "latest.pth.tar"),
+    )
+    if ckpt_info.get("resumed", False):
+        if "decoder_state_dict" in ckpt_info:
+            decoder.load_state_dict(unwrap_state_dict(ckpt_info["decoder_state_dict"]))
+        if "dethead_state_dict" in ckpt_info:
+            dethead.load_state_dict(unwrap_state_dict(ckpt_info["dethead_state_dict"]))
+    global_step = ckpt_info.get("step", 0)
 
     # Training loop
     logger.info(f"Starting training for {cfg.optim.epochs} epochs...")
 
+    jepa_module = jepa
+    jepa = wrap_ddp(jepa, device, compile=cfg.model.get("compile", False))
+    decoder = wrap_ddp(decoder, device)
+    dethead = wrap_ddp(dethead, device)
+    pixel_decoder.head = decoder
+    detection_head.head = dethead
+
+    rank_acc = EffectiveRankAccumulator()
+    steps_per_epoch = len(train_loader)
+    iterations_per_epoch = cfg.optim.get("iterations_per_epoch", None)
+    if iterations_per_epoch is not None:
+        steps_per_epoch = min(steps_per_epoch, iterations_per_epoch)
+
     for epoch in range(start_epoch, cfg.optim.epochs):
+        if hasattr(train_loader.sampler, "set_epoch"):
+            train_loader.sampler.set_epoch(epoch)
+
         pbar = tqdm(
-            train_loader,
+            islice(enumerate(train_loader), steps_per_epoch),
+            total=steps_per_epoch,
             desc=f"Epoch {epoch}",
-            disable=cfg.logging.get("tqdm_silent", False),
+            disable=cfg.logging.get("tqdm_silent", False) or not is_main,
         )
 
-        for batch in pbar:
+        for idx, batch in pbar:
             batch = {k: v.to(device) for k, v in batch.items()}
             x = batch["video"]
             loc_map = batch["digit_location"]
 
             optimizer.zero_grad()
-            _, (jepa_loss, regl, _, regldict, pl) = jepa.unroll(
+            _, _, (jepa_loss, regl, _, regldict, pl) = jepa(
                 x,
                 actions=None,
                 nsteps=cfg.model.steps,
@@ -200,8 +236,16 @@ def run(
             det_loss = detection_head(x, loc_map)
             total_loss = jepa_loss + recon_loss + det_loss
 
-            total_loss.backward()
-            optimizer.step()
+            scaler.scale(total_loss).backward()
+            grad_clip = cfg.optim.get("grad_clip")
+            jepa_grad_norm = optimizer_step(scaler, optimizer, jepa_module, grad_clip)
+
+            # Accumulate effective rank every step (deque handles windowing)
+            with torch.no_grad():
+                enc = jepa_module.encode(x)  # [B, D, T, H', W']
+                D = enc.shape[1]
+                flat_enc = enc.permute(0, 2, 3, 4, 1).reshape(-1, D)  # [B*T*H'*W', D]
+                rank_acc.accumulate("train/visual_effective_rank", flat_enc)
 
             # Update progress bar
             pbar.set_postfix(
@@ -215,7 +259,7 @@ def run(
             global_step += 1
 
         # Validation and logging
-        if epoch % cfg.logging.log_every == 0:
+        if is_main and epoch % cfg.logging.log_every == 0:
             val_logs = validation_loop(
                 val_loader, jepa, detection_head, pixel_decoder, cfg.model.steps, device
             )
@@ -227,11 +271,19 @@ def run(
                 "train/pred_loss": pl.item(),
                 "train/recon_loss": recon_loss.item(),
                 "train/det_loss": det_loss.item(),
+                **(
+                    {
+                        "optim/grad_norm": jepa_grad_norm,
+                    }
+                    if jepa_grad_norm is not None
+                    else {}
+                ),
             }
             for k, v in regldict.items():
                 train_metrics[f"train/{k}"] = float(v)
 
             all_metrics = {**train_metrics, **val_logs}
+            all_metrics.update(rank_acc.compute())
 
             if wandb_run:
                 import wandb
@@ -250,20 +302,16 @@ def run(
             )
 
         # Save checkpoint
-        save_checkpoint(
-            exp_dir / "latest.pth.tar",
-            model=jepa,
-            optimizer=optimizer,
-            epoch=epoch,
-            step=global_step,
-        )
-        if epoch % cfg.logging.save_every == 0 and epoch > 0:
-            save_checkpoint(
-                exp_dir / f"epoch_{epoch}.pth.tar",
-                model=jepa,
-                optimizer=optimizer,
-                epoch=epoch,
+        if is_main:
+            save_training_state(
+                exp_dir,
+                jepa,
+                optimizer,
+                epoch,
+                save_every=cfg.logging.save_every,
                 step=global_step,
+                decoder_state_dict=unwrap_model(decoder).state_dict(),
+                dethead_state_dict=unwrap_model(dethead).state_dict(),
             )
 
     if wandb_run:
@@ -271,6 +319,7 @@ def run(
 
         wandb.finish()
 
+    cleanup_distributed()
     logger.info("Training complete!")
 
 

@@ -1,0 +1,7 @@
+meta:
+  num_eval_episodes: 20
+  plan_suffix: _pusht
+env:
+  n_allowed_steps: 25
+data:
+  env_name: pusht

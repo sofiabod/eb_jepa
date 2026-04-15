@@ -48,10 +48,11 @@ def visualize_videos(
     """
 
     x = batch["video"]
+    num_samples = min(num_samples, x.shape[0])
     x_jepa = jepa.encoder(x)
 
     T = x.shape[2]
-    preds, _ = jepa.unroll(
+    preds, _, _ = jepa.unroll(
         x,
         actions=None,
         nsteps=T - 2,
@@ -137,7 +138,7 @@ def validation_loop(val_loader, jepa, detection_head, pixel_decoder, steps, devi
             metrics[k].append(v)
 
         T = x.shape[2]
-        preds, _ = jepa.unroll(
+        preds, _, _ = jepa.unroll(
             x,
             actions=None,
             nsteps=T - 2,

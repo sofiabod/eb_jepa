@@ -1,0 +1,27 @@
+# SLURM configuration for examples/launch_sbatch.py
+# Copy this file to local/slurm.yaml and edit for your cluster:
+#   cp local/slurm.yaml.example local/slurm.yaml
+#
+# All fields are optional. Values here override the defaults in launch_sbatch.py.
+# The local/ directory is gitignored, so your settings stay local.
+
+# Cluster partition to submit jobs to (e.g., "gpu", "learn", "a100")
+partition: null
+
+# Quality-of-service tier (e.g., "normal", "high", "explore")
+qos: null
+
+# Billing account for job accounting (e.g., "my_lab_account")
+account: null
+
+# Memory per GPU (e.g., "80G", "210G")
+mem_per_gpu: "80G"
+
+# CPU cores per task
+cpus_per_task: 16
+
+# Job timeout in minutes (default: 24 hours)
+timeout_min: 1440
+
+# GPUs per node (usually 1; override per-job with --gpus flag)
+gpus_per_node: 1

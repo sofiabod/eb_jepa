@@ -28,9 +28,11 @@ dependencies = [
     "torch==2.6.0",
     "torchcodec>=0.4.0",
     "torchvision",
+    "transformers",
     "wandb[media]>=0.21.1",
     "gymnasium>=1.1.1",
     "imageio",
+    "lpips>=0.1.4",
     "seaborn",
     "submitit",
     "tqdm",
@@ -38,6 +40,20 @@ dependencies = [
     "decord",
     "omegaconf",
     "ruamel.yaml",
+    "h5py",
+    # Scientific computing
+    "scipy",
+    "scikit-image",
+    # Simulation environments
+    "gym==0.23.1",
+    "gymnasium>=1.2.0",
+    "pygame>=2.6.0",
+    "pymunk==6.8.0",
+    "shapely",
+    "pybullet",
+    "mujoco>=3.2.0",
+    "dm-control>=1.0.34",
+    "metaworld",
 ]
 requires-python = "==3.12.*"
 

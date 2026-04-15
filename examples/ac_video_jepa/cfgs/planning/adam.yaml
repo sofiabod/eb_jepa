@@ -1,0 +1,25 @@
+eval_tag: adam_itr500_lr1_H90
+logging:
+  tqdm_silent: false
+task_specification:
+  goal_source: random_state # random_state or dset
+  obs: rgb
+planner:
+  planner_name: adam # cem | mppi | gd | adam
+  num_act_stepped: 1
+  plan_length: 90 # horizon
+  n_iters: 500 # number of gradient descent iterations
+  lr: 1.0 # learning rate
+  action_noise: 0.003 # noise added after each gradient step
+  sample_type: randn # randn or zero
+  var_scale: 1.5 # scale for random initialization
+  max_norms:
+    - 2.45
+  max_norm_dims:
+    - [0, 1]
+  decode_each_iteration: false
+  planning_objective:
+    objective_type: repr_dist
+    sum_all_diffs: false
+    alpha: 0.
+ctxt_window_time: 1

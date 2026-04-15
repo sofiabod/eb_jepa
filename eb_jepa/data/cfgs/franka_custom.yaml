@@ -1,0 +1,60 @@
+# Franka Custom (MPK/HF variant of DROID) dataset configuration.
+# Uses the same DROIDVideoDataset class with mpk_dset: true.
+
+# Dataset properties
+action_dim: 7  # 7-DoF delta poses (xyz, rotation, gripper)
+num_channels: 3  # RGB
+img_size: 256  # target resize
+
+# Dataset path
+data_path: ${EBJEPA_DATA}/franka_custom
+
+# MPK dataset format
+mpk_dset: true
+mpk_manifest_patterns: ["**/episode.h5"]
+
+# Camera configuration (HF-format view names)
+camera_views: ["exterior_image_2_left"]
+
+# Video loading
+fps: 5
+frameskip: 1
+action_skip: 1
+
+# Normalization
+normalize_action: true
+
+# Action format conversion
+droid_to_rcasa_action_format: 1
+camera_frame: false
+
+# Dataset fraction
+droid_fraction: 1.0
+seed: 42
+
+# Train/val split
+train_fraction: 0.9
+
+# Trajectory slicing
+num_frames: 10
+num_frames_val: null
+process_actions: "concat"
+
+# Transform settings
+transform:
+  random_horizontal_flip: false
+  random_resize_aspect_ratio: [1.0, 1.0]
+  random_resize_scale: [1.0, 1.0]
+  reprob: 0.0
+  auto_augment: false
+  motion_shift: false
+  normalize: null
+  do_255_to_1: false
+
+# Dataloader settings
+batch_size: 16
+val_batch_size: 4
+num_workers: 4
+pin_mem: true
+persistent_workers: false
+drop_last: true

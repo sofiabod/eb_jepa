@@ -227,5 +227,9 @@ checkpoints/
 *.npy
 eb_jepa_ICLR/
 arxiv/
+arxiv_eb2/
 arxiv_tmp/
+arxiv_hierarchy/
 CLAUDE.md
+.llms/
+local/

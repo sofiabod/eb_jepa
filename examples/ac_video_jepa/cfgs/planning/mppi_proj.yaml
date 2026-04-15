@@ -1,0 +1,24 @@
+eval_tag: mppi_projected_itr20_ns200_H90
+logging:
+  tqdm_silent: false
+task_specification:
+  goal_source: random_state # random_state or dset
+  obs: rgb
+planner:
+  planner_name: mppi # cem | mppi | admm
+  num_act_stepped: 1
+  plan_length: 90 # horizon
+  n_iters: 20 # number of planning iterations
+  num_samples: 200 # number of samples for CEM
+  num_elites: 20 # number of elites for CEM
+  max_norms:
+    - 2.45
+  max_norm_dims:
+    - [0, 1]
+  var_scale: 1.5
+  decode_each_iteration: false
+  planning_objective:
+    objective_type: projected_dist
+    distance: l2  # l1 or l2
+    sum_all_diffs: true
+ctxt_window_time: 1

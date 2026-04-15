@@ -1,0 +1,65 @@
+logging:
+  log_wandb: true
+  wandb_group:
+  wandb_sweep:
+  log_every: 10
+  exp_tag:
+  save_every: 1
+  tqdm_silent: false
+meta:
+  model_folder:
+  load_model: true
+  enable_plan_eval: true
+  eval_every_itr: -1
+  light_eval_freq: 100
+  seed: 1
+  eval_only_mode: false
+  skip_cost_module_at_eval: false
+data:
+  env_name: two_rooms
+  batch_size: 256
+  num_workers: 16
+  pin_mem: true
+  persistent_workers: true
+training:
+  use_amp: true
+  dtype: bfloat16
+model:
+  compile: true
+  dobs: 2
+  encoder:
+    architecture: impala
+    stack_sizes: [16, 32, 32]
+    output_dim: 512
+  rollout:
+    nsteps: 12
+    val_nsteps: 8
+  regularizer:
+    cov_coeff: 8
+    std_coeff: 8
+    sim_coeff_t: 16
+    idm_coeff: 1
+    pool_time: true
+    spatial_as_samples: false
+    use_proj: false
+    idm_after_proj: false
+    sim_t_after_proj: false
+optim:
+  epochs: 12
+  lr: 0.001
+  grad_clip: 1.
+  weight_decay: 1.e-5
+probe:
+  state_dims: [0, 1]
+eval:
+  plan_cfg_path: examples/ac_video_jepa/cfgs/planning/mppi_H12_ni5_ns100_ne10.yaml
+  eval_cfg_path: examples/ac_video_jepa/cfgs/eval/two_rooms.yaml
+
+sweep:
+  # Sweep grid for AC video JEPA hyperparameter search
+  param_grid:
+    model.regularizer.cov_coeff: [8, 12]
+    model.regularizer.std_coeff: [8, 16]
+    model.regularizer.sim_coeff_t: [0, 8, 12, 16]
+    model.regularizer.idm_coeff: [1, 2]
+    meta.seed: [1, 1000, 10000]

@@ -1,0 +1,112 @@
+slurm:
+  gpus: 4
+logging:
+  log_wandb: true
+  wandb_group:
+  wandb_sweep:
+  log_every: 100
+  exp_tag: train_droid_vits16_patch384_lewm
+  save_every: 5
+  tqdm_silent: false
+meta:
+  model_folder:
+  load_model: true
+  enable_plan_eval: false
+  eval_every_itr: 6000
+  light_eval_freq: 250
+  seed: 1
+  eval_only_mode: false
+  skip_cost_module_at_eval: false
+  train_decoder_only: false
+data:
+  env_name: droid
+  camera_views: ["left_mp4_path", "right_mp4_path"]
+  fps: 5
+  frameskip: 1
+  action_skip: 1
+  normalize_action: true
+  droid_fraction: 1.0
+  train_fraction: 0.9
+  seed: 42
+  num_frames: 8
+  num_frames_val: 8
+  process_actions: "concat"
+  batch_size: 256
+  val_batch_size: 4
+  num_workers: 16
+  pin_mem: true
+  persistent_workers: true
+  img_size: 256
+  transform:
+    normalize: [[0.485, 0.456, 0.406], [0.229, 0.224, 0.225]]
+training:
+  use_amp: true
+  dtype: bfloat16
+model:
+  compile: false
+  dobs: 3
+  encoder:
+    architecture: vit
+    scale: small
+    patch_size: 16
+    output_dim: 384
+    freeze: false
+  rollout:
+    unroll_mode: parallel
+    nsteps: 2
+    ctxt_window_time: 3
+    val_ctxt_window_time: 2
+    stop_gradient: true
+    detach_pred_target: true
+  predictor:
+    type: spatial_causal_transformer
+    use_residual: false
+    predictor_dim: 384
+    depth: 12
+    heads: 6
+    dim_head: 64
+    max_seq_len: 16
+    dropout: 0.1
+    emb_dropout: 0.0
+    adaln_init_scale: 0.02
+    action_cond_mode: adaln
+  regularizer:
+    type: sigreg
+    sigreg_coeff: 0.08
+    sim_coeff_t: 0
+    idm_coeff: 50
+    spatial_as_samples: false
+    reg_per_patch: true
+    use_proj: false
+    idm_after_proj: false
+    sim_t_after_proj: false
+optim:
+  iterations_per_epoch: 300
+  epochs: 100
+  lr: 5.e-4
+  weight_decay: 1.e-4
+  grad_clip: 1.0
+probe:
+  type: attentive
+  state_dims: [0, 1, 2]
+  depth: 6
+  decoder_embed_dim: 384
+eval:
+  plan_cfg_path: examples/ac_video_jepa/cfgs/planning/droid_mppi.yaml
+  eval_cfg_path: examples/ac_video_jepa/cfgs/eval/franka_custom.yaml
+visual_decoder:
+  enabled: true
+  base_channels: 256
+  init_spatial: 1
+  min_channels: 64
+  use_lpips: true
+  pixel_weight: 10.0
+  perceptual_weight: 1.0
+
+sweep:
+  param_grid:
+    # meta.seed: [1, 10000]
+    model.regularizer.idm_coeff: [1, 5, 10, 50, 100]
+    # model.encoder.scale: [tiny, small]
+    model.predictor.predictor_dim: [32, 384]
+    meta.seed: [1, 10000]

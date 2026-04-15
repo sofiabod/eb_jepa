@@ -4,15 +4,13 @@ from unittest.mock import Mock, patch
 
 import gymnasium as gym
 import numpy as np
+import pytest
 import torch
 
-from eb_jepa.planning import (
-    CEMPlanner,
-    GCAgent,
-    PlanningResult,
-    ReprTargetDistMPCObjective,
-    main_eval,
-)
+from eb_jepa.planning.agent import GCAgent
+from eb_jepa.planning.evaluation import main_eval
+from eb_jepa.planning.objectives import ReprDistObjective
+from eb_jepa.planning.optimizers import CEMPlanner, MPPIPlanner, PlanningResult
 
 
 def test_cem_planner():
@@ -20,18 +18,13 @@ def test_cem_planner():
 
     # Create a mock unroll function
     def mock_unroll(obs_init, actions):
-        # Mock function that returns a tensor with shape matching the input actions
-        # but with an extra dimension for the state representation
         batch_size = actions.shape[0]
         time_steps = actions.shape[2]
-        return torch.zeros(batch_size, 16, time_steps, 8, 8)  # B, C, T, H, W
+        return torch.zeros(batch_size, 16, time_steps, 8, 8, device=actions.device)
 
-    # Create a mock objective function
     def mock_objective(predicted_states):
-        # Return a loss value for each batch item
         return torch.sum(predicted_states, dim=(1, 2, 3, 4))
 
-    # Test 1: Basic initialization and planning
     planner = CEMPlanner(
         unroll=mock_unroll,
         n_iters=3,
@@ -43,11 +36,9 @@ def test_cem_planner():
         decode_each_iteration=False,
     )
 
-    # Set the objective
     planner.set_objective(mock_objective)
 
-    # Test planning
-    obs_init = torch.zeros(1, 16, 1, 8, 8)  # B, C, T, H, W
+    obs_init = torch.zeros(1, 16, 1, 8, 8, device=planner.device)
     result = planner.plan(obs_init)
 
     # Check return type and shape
@@ -77,13 +68,49 @@ def test_cem_planner():
     assert cost.shape == (3,), "Cost should have shape (batch_size, 1)"
 
 
+def test_mppi_planner():
+    """Test the MPPIPlanner class with various scenarios."""
+
+    def mock_unroll(obs_init, actions):
+        batch_size = actions.shape[0]
+        time_steps = actions.shape[2]
+        return torch.zeros(batch_size, 16, time_steps, 8, 8, device=actions.device)
+
+    def mock_objective(predicted_states):
+        return torch.sum(predicted_states, dim=(1, 2, 3, 4))
+
+    planner = MPPIPlanner(
+        unroll=mock_unroll,
+        n_iters=3,
+        num_samples=10,
+        plan_length=5,
+        action_dim=2,
+        max_std=1.0,
+        num_elites=2,
+        temperature=0.005,
+        decode_each_iteration=False,
+    )
+    planner.set_objective(mock_objective)
+
+    obs_init = torch.zeros(1, 16, 1, 8, 8, device=planner.device)
+    result = planner.plan(obs_init)
+
+    assert isinstance(result, PlanningResult)
+    assert result.actions.shape == (5, 2)
+    assert isinstance(result.losses, torch.Tensor)
+
+    # Test with steps_left
+    result_with_steps = planner.plan(obs_init, steps_left=2)
+    assert result_with_steps.actions.shape == (2, 2)
+
+
 def test_repr_target_dist_objective():
-    """Test the ReprTargetDistMPCObjective class."""
+    """Test the ReprDistObjective class."""
     # Create mock target representation
     target_repr = torch.ones(1, 8, 1, 8, 8)  # B, C, T, H, W
 
     # Initialize objective
-    objective = ReprTargetDistMPCObjective(target_repr)
+    objective = ReprDistObjective(target_repr)
 
     # Test objective calculation
     predicted_repr = torch.zeros(2, 8, 5, 8, 8)  # B, C, T, H, W
@@ -102,103 +129,102 @@ def test_repr_target_dist_objective():
     ), "Cost should be lower for matching repr"
 
 
-@patch("eb_jepa.planning.CEMPlanner")
+@patch("eb_jepa.planning.agent.CEMPlanner")
 def test_gc_agent(mock_cem_planner):
     """Test the GCAgent class."""
-    # Create a mock model with parameters
     mock_model = Mock()
     mock_model.encode = Mock(return_value=torch.zeros(1, 8, 1, 8, 8))
-    # unroll returns a tuple (predicted_states, loss) - loss is None when compute_loss=False
-    mock_model.unroll = Mock(return_value=(torch.zeros(10, 8, 6, 8, 8), None))
-    # Add a parameter method that returns an iterator with a device
+    mock_model.unroll = Mock(return_value=(torch.zeros(10, 8, 6, 8, 8), None, None))
     param = torch.nn.Parameter(torch.zeros(1))
-    mock_model.parameters = Mock(return_value=iter([param]))
-    device = torch.device("cpu")
-    param.data = param.data.to(device)
+    mock_model.parameters = Mock(side_effect=lambda: iter([param]))
+    mock_model.predictor = None
 
-    # Create a mock normalizer
-    mock_normalizer = Mock()
-    mock_normalizer.normalize_state = Mock(side_effect=lambda x: x)
-    mock_normalizer.unnormalize_state = Mock(side_effect=lambda x: x)
-    mock_normalizer.normalize_location = Mock(side_effect=lambda x: x)
+    mock_preprocessor = Mock()
+    mock_preprocessor.normalize_obs = Mock(side_effect=lambda x: x)
+    mock_preprocessor.unnormalize_obs = Mock(side_effect=lambda x: x)
+    mock_preprocessor.normalize_proprios = Mock(side_effect=lambda x: x)
+    mock_preprocessor.action_mean = None
 
-    # Create a real PlanningResult with actual tensor data
     planning_result = PlanningResult(
-        actions=torch.zeros(6, 2),  # T, A - make it big enough for any slicing
+        actions=torch.zeros(6, 2),
         losses=torch.zeros(10),
         prev_elite_losses_mean=torch.zeros(5),
         prev_elite_losses_std=torch.zeros(5),
     )
 
-    # Setup mock planner
     mock_planner_instance = Mock()
     mock_planner_instance.plan = Mock(return_value=planning_result)
+    mock_planner_instance.objective = None
+    mock_planner_instance.set_objective = Mock(
+        side_effect=lambda obj: setattr(mock_planner_instance, "objective", obj)
+    )
     mock_cem_planner.return_value = mock_planner_instance
 
-    # Create plan config
-    from omegaconf import OmegaConf
+    # Patch planner_name_map so the mock planner is actually used
+    with patch.dict(
+        "eb_jepa.planning.agent.planner_name_map",
+        {"cem": mock_cem_planner},
+    ):
+        from omegaconf import OmegaConf
 
-    plan_cfg = OmegaConf.create(
-        {
-            "planner": {
-                "planner_name": "cem",
-                "n_iters": 3,
-                "num_samples": 10,
-                "plan_length": 5,
-                "num_elites": 2,
-                "var_scale": 1.0,
-                "decode_each_iteration": False,
-                "num_act_stepped": 1,
-                "planning_objective": {
-                    "objective_type": "repr_dist",
-                    "sum_all_diffs": True,
+        plan_cfg = OmegaConf.create(
+            {
+                "planner": {
+                    "planner_name": "cem",
+                    "n_iters": 3,
+                    "num_samples": 10,
+                    "plan_length": 5,
+                    "num_elites": 2,
+                    "var_scale": 1.0,
+                    "decode_each_iteration": False,
+                    "num_act_stepped": 1,
+                    "planning_objective": {
+                        "objective_type": "repr_dist",
+                        "sum_all_diffs": True,
+                    },
                 },
-            },
-            "ctxt_window_time": 2,
-        }
-    )
+                "ctxt_window_time": 2,
+                "logging": {"tqdm_silent": False, "verbose": False},
+            }
+        )
 
-    # Test 1: Basic initialization
-    agent = GCAgent(
-        mock_model,
-        action_dim=2,
-        plan_cfg=plan_cfg,
-        normalizer=mock_normalizer,
-    )
+        agent = GCAgent(
+            mock_model,
+            action_dim=2,
+            plan_cfg=plan_cfg,
+            preprocessor=mock_preprocessor,
+        )
 
-    # Test 2: Setting a goal
-    goal_state = torch.randn(1, 8, 8)  # C, H, W
-    goal_position = torch.tensor([4.0, 4.0])
-    agent.set_goal(goal_state, goal_position)
+        # Test: Setting a goal
+        goal_state = torch.randn(1, 8, 8)
+        goal_position = torch.tensor([4.0, 4.0])
+        agent.set_goal(goal_state, goal_position)
 
-    # Verify goal setting
-    assert agent.goal_position is goal_position, "Goal position should be stored"
-    assert mock_model.encode.called, "Model encode should be called when setting goal"
-    assert agent.objective is not None, "Objective should be set"
-    assert (
-        agent.planner.set_objective.called
-    ), "Planner's set_objective should be called"
+        assert agent.goal_position is goal_position, "Goal position should be stored"
+        assert (
+            mock_model.encode.called
+        ), "Model encode should be called when setting goal"
+        assert agent.objective is not None, "Objective should be set"
+        assert agent.planner.objective is not None, "Planner's objective should be set"
 
-    # Test 3: Acting
-    obs = torch.randn(1, 8, 1, 8, 8)  # B, C, T, H, W
-    action = agent.act(obs, steps_left=10)
+        # Test: Acting
+        obs = torch.randn(1, 8, 1, 8, 8)
+        action = agent.act(obs, steps_left=10)
 
-    # Verify acting
-    assert mock_planner_instance.plan.called, "Planner's plan should be called"
-    assert isinstance(action, torch.Tensor), "Should return a tensor"
-    assert action.shape == (1, 2), "Should return an action with shape (1, 2)"
+        assert mock_planner_instance.plan.called, "Planner's plan should be called"
+        assert isinstance(action, np.ndarray), "Should return a numpy array"
+        assert action.shape == (1, 2), "Should return an action with shape (1, 2)"
 
-    # Test 4: Test unroll function
-    obs_init = torch.randn(1, 8, 1, 8, 8)
-    actions = torch.randn(5, 2, 6)  # B, A, T
-    states = agent.unroll(obs_init, actions)
+        # Test: Unroll function
+        obs_init = torch.randn(1, 8, 1, 8, 8)
+        actions = torch.randn(5, 2, 6)
+        states = agent.unroll(obs_init, actions)
 
-    # Verify unroll behavior
-    assert mock_model.unroll.called, "Model's unroll should be called"
-    assert isinstance(states, torch.Tensor), "Should return a tensor"
+        assert mock_model.unroll.called, "Model's unroll should be called"
+        assert isinstance(states, torch.Tensor), "Should return a tensor"
 
 
-@patch("eb_jepa.planning.GCAgent")
+@patch("eb_jepa.planning.evaluation.GCAgent")
 def test_main_eval(mock_gc_agent):
     """Test the main_eval function."""
     num_episodes = 2
@@ -233,6 +259,7 @@ def test_main_eval(mock_gc_agent):
     mock_env.n_allowed_steps = 10
     mock_env.action_space = gym.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
     mock_env.normalizer = Mock()
+    del mock_env.sample_random_init_goal_states
 
     # Mock env creator function
     def mock_env_creator():
@@ -255,6 +282,8 @@ def test_main_eval(mock_gc_agent):
     mock_agent_instance._prev_losses = None
     mock_agent_instance._prev_elite_losses_mean = None
     mock_agent_instance._prev_elite_losses_std = None
+    mock_agent_instance._prev_losses_per_level = {}
+    mock_agent_instance._is_hierarchical = False
     mock_gc_agent.return_value = mock_agent_instance
 
     # Create plan config
@@ -325,7 +354,7 @@ def test_planning_integration():
         ):
             # Simpler unroll function that doesn't depend on complex tensor shapes
             B = obs.shape[0]
-            return torch.ones(B, 8, nsteps, 4, 4, device=obs.device), None
+            return torch.ones(B, 8, nsteps, 4, 4, device=obs.device), None, None
 
     # Test full planning episode
     # Create model and move to appropriate device
@@ -333,11 +362,13 @@ def test_planning_integration():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    # Create a mock normalizer
-    mock_normalizer = Mock()
-    mock_normalizer.normalize_state = Mock(side_effect=lambda x: x)
-    mock_normalizer.unnormalize_state = Mock(side_effect=lambda x: x)
-    mock_normalizer.normalize_location = Mock(side_effect=lambda x: x)
+    # Create a mock preprocessor
+    mock_preprocessor = Mock()
+    mock_preprocessor.normalize_obs = Mock(side_effect=lambda x: x)
+    mock_preprocessor.unnormalize_obs = Mock(side_effect=lambda x: x)
+    mock_preprocessor.normalize_proprios = Mock(side_effect=lambda x: x)
+    mock_preprocessor.action_mean = None
+    mock_preprocessor.action_std = None
 
     # Create plan config
     from omegaconf import OmegaConf
@@ -359,6 +390,7 @@ def test_planning_integration():
                 },
             },
             "ctxt_window_time": 2,
+            "logging": {"tqdm_silent": False, "verbose": False},
         }
     )
 
@@ -367,7 +399,7 @@ def test_planning_integration():
         model,
         action_dim=2,
         plan_cfg=plan_cfg,
-        normalizer=mock_normalizer,
+        preprocessor=mock_preprocessor,
     )
 
     # Set goal
@@ -382,8 +414,8 @@ def test_planning_integration():
     action = agent.act(obs, steps_left=8)
 
     # Verify action
-    assert isinstance(action, torch.Tensor), "Should return a tensor"
+    assert isinstance(action, np.ndarray), "Should return a numpy array"
     assert action.shape == (1, 2), "Should return appropriate action shape"
 
     # Since our dummy model favors larger actions, the planned actions should have magnitude > 0
-    assert torch.sum(torch.abs(action)) > 0, "Agent should select non-zero actions"
+    assert np.sum(np.abs(action)) > 0, "Agent should select non-zero actions"

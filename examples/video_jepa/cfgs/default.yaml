@@ -7,7 +7,7 @@ meta:
 
 data:
   dataset: moving_mnist
-  batch_size: 64
+  batch_size: 16
   num_workers: 4
 
 model:
@@ -15,6 +15,7 @@ model:
   dobs: 1           # Input channels (grayscale)
   henc: 32          # Hidden dimension in encoder
   dstc: 16          # Output representation dimension
+  compile: false
 
   # Predictor (ResUNet)
   hpre: 32          # Hidden dimension in predictor
@@ -28,8 +29,10 @@ loss:
   std_coeff: 10.0   # Standard deviation loss weight
 
 optim:
+  type: adam
   epochs: 50
   lr: 1.0e-3
+  grad_clip: 2.0
 
 logging:
   log_wandb: true
@@ -40,7 +43,7 @@ logging:
 
 training:
   use_amp: true       # Use automatic mixed precision
-  dtype: float16      # float16 or bfloat16
+  dtype: bfloat16      # float16 or bfloat16
 
 # --- Parameters used when running with --full-sweep
 # By default, only the parameters specified above are used
