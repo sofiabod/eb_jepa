@@ -39,20 +39,14 @@ image = (
         "pip install torch-scatter torch-sparse torch-cluster "
         "-f https://data.pyg.org/whl/torch-2.1.0+cu118.html"
     )
-    .pip_install("yacs", "networkx", "einops", "metis", "scikit-learn", "tensorboard", "numpy")
-)
-
-# mount the graph-jepa source directory read-only into the container
-graph_jepa_mount = modal.Mount.from_local_dir(
-    str(GRAPH_JEPA_SRC),
-    remote_path="/root/graph-jepa",
+    .pip_install("yacs", "networkx", "einops", "metis", "scikit-learn", "tensorboard", "numpy<2", "ogb", "scipy")
+    .add_local_dir(str(GRAPH_JEPA_SRC), remote_path="/root/graph-jepa")
 )
 
 
 @app.function(
     gpu="T4",
     image=image,
-    mounts=[graph_jepa_mount],
     timeout=7200,
 )
 def train_dataset(dataset_name: str) -> dict:
