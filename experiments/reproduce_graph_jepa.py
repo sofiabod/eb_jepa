@@ -32,9 +32,14 @@ app = modal.App("reproduce-graph-jepa")
 
 image = (
     modal.Image.debian_slim(python_version="3.10")
-    .run_commands("apt-get update -qq && apt-get install -y -q metis libmetis-dev")
+    # install C metis library first, then run ldconfig so ctypes can find libmetis.so
+    .run_commands(
+        "apt-get update -qq && apt-get install -y -q metis libmetis-dev",
+        "ldconfig",
+    )
     .pip_install("torch==2.1.0", extra_index_url="https://download.pytorch.org/whl/cu118")
-    .pip_install("torch-geometric")
+    # pin torch-geometric to a version known to work with torch 2.1 + the PyG sparse extensions
+    .pip_install("torch-geometric==2.5.3")
     .run_commands(
         "pip install torch-scatter torch-sparse torch-cluster "
         "-f https://data.pyg.org/whl/torch-2.1.0+cu118.html"
